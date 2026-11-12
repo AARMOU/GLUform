@@ -37,7 +37,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
-interface FileOps { fun open(); fun insert(); fun save(); fun saveAs(); fun export(format: String, quality: String = "standard") }
+interface FileOps { fun open(); fun insert(); fun save(); fun saveAs(); fun export(format: String, quality: String = "standard"); fun exportDiagnostics() }
 
 val Accent = Color(0xFFF2A33A)
 
@@ -92,8 +92,10 @@ fun App(files: FileOps) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             BoxWithConstraints {
                 val compact = ViewportLayout.useCompactLayout(maxWidth.value)
+                LaunchedEffect(compact) { Diagnostics.event("ui.layout", "compact=" + compact + " availableDp=" + maxWidth.value) }
                 LaunchedEffect(Cad.form, Cad.sketch) {
                     if (Cad.form != null || Cad.sketch != null) Ui.inspectorExpanded = true
+                    Diagnostics.event("ui.inspector.auto", "expanded=" + Ui.inspectorExpanded + " activeSketch=" + (Cad.sketch?.id ?: -1) + " form=" + (Cad.form != null))
                 }
                 Column(Modifier.fillMaxSize()) {
                     TopBar(files, compact)
@@ -130,6 +132,7 @@ private fun TopBar(files: FileOps, compact: Boolean) {
                 HorizontalDivider()
                 Item("Save") { close(); files.save() }
                 Item("Save as…") { close(); files.saveAs() }
+                Item("Export diagnostics…") { close(); files.exportDiagnostics() }
                 HorizontalDivider()
                 Item("Export STL…") { close(); Ui.ask = Ask.ExportStl }
                 Item("Export STEP…") { close(); files.export("step") }
@@ -268,7 +271,7 @@ private fun sketchMirror() {
 private fun Viewport() {
     val density = LocalDensity.current.density
     val renderer = remember { Renderer() }
-    Box(Modifier.fillMaxSize().onSizeChanged { Cad.viewW = it.width; Cad.viewH = it.height; Cad.push() }) {
+    Box(Modifier.fillMaxSize().onSizeChanged { Diagnostics.event("ui.viewport.size", it.width.toString() + "x" + it.height); Cad.viewW = it.width; Cad.viewH = it.height; Cad.push() }) {
         AndroidView(factory = { ctx ->
             Cad.density = density
             CadView(ctx, renderer, Cad).also { v -> Cad.onFrame = { st -> renderer.state = st; v.requestRender() }; Cad.push() }
