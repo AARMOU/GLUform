@@ -41,16 +41,30 @@ class MainActivity : ComponentActivity(), FileOps {
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
 
+    private val autosaveGeneration = AutosaveGeneration()
+
     override fun onStop() {
         super.onStop()
-        // keep the session: Android may end the app while it is in the background
-        val dir = File(filesDir, "autosave").apply { mkdirs() }
-        dir.listFiles()?.forEach { it.delete() }
-        if ((Cad.doc.optJSONArray("timeline")?.length() ?: 0) > 0) {
-            val f = File(dir, base() + ".sc")
-            prefs.edit().putString("autosave", f.absolutePath).apply()
-            Cad.exec("file.save_as", JSONObject().put("path", f.absolutePath).put("overwrite", true), quiet = true)
-        } else prefs.edit().remove("autosave").apply()
+        // Do not erase an existing recovery snapshot if the engine has not finished loading.
+        // A valid, empty timeline is still a document worth saving.
+        if (Cad.doc.optJSONArray("timeline") == null) return
+        val store = AutosaveSnapshotStore(File(filesDir, "autosave")) { path ->
+            // commit() reports whether the new recovery pointer was actually persisted.
+            prefs.edit().putString("autosave", path).commit()
+        }
+        val candidate = runCatching { store.stage(prefs.getString("autosave", null)) }.getOrElse {
+            Cad.message = "Autosave unavailable: ${it.message ?: "cannot prepare file"}"
+            return
+        }
+        val request = autosaveGeneration.next()
+        Cad.exec("file.save_as", JSONObject().put("path", candidate.target.absolutePath).put("overwrite", true), quiet = true) { result ->
+            if (!autosaveGeneration.isLatest(request)) {
+                candidate.target.delete() // superseded by a more recent snapshot
+                return@exec
+            }
+            val saved = runCatching { store.finish(candidate, result != null) }.getOrDefault(false)
+            if (!saved) Cad.message = "Autosave failed; your previous recovery snapshot was preserved"
+        }
     }
 
     private fun name(u: Uri): String {
