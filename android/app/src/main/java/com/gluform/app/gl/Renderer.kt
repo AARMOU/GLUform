@@ -59,7 +59,10 @@ class Renderer : GLSurfaceView.Renderer {
         val dyn = ArrayList<Float>(); val dynIdx = ArrayList<Int>()
         if (st.grid) grid(st, dyn, dynIdx)
         fill(dynBuf, dyn, dynIdx, true)
+        // The line shader outputs RGBA; blending is required for subtle grid alpha.
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glDepthMask(false); drawLines(dynBuf, mvp, tgt, 0f); glDepthMask(true)
+        glDisable(GL_BLEND)
 
         if (st.shaded) {
             glUseProgram(meshProg)
@@ -128,12 +131,12 @@ class Renderer : GLSurfaceView.Renderer {
         fun p(u: Double, v: Double) = floatArrayOf((o[0] + x[0] * u + y[0] * v).toFloat(), (o[1] + x[1] * u + y[1] * v).toFloat(), (o[2] + x[2] * u + y[2] * v).toFloat())
         for (i in -n..n) {
             val major = (round((cu + i * step) / step).toLong() % 10L) == 0L
-            val c = floatArrayOf(ink, ink, ink, if (major) 0.22f else 0.09f)
+            val c = floatArrayOf(ink, ink, ink, if (major) 0.18f else 0.06f)
             val a = p(cu + i * step, cv - ext); val b = p(cu + i * step, cv + ext)
             polyline(out, idx, a + b, c, st.density * 0.8f, false)
             val a2 = p(cu - ext, cv + i * step); val b2 = p(cu + ext, cv + i * step)
             val major2 = (round((cv + i * step) / step).toLong() % 10L) == 0L
-            polyline(out, idx, a2 + b2, floatArrayOf(ink, ink, ink, if (major2) 0.22f else 0.09f), st.density * 0.8f, false)
+            polyline(out, idx, a2 + b2, floatArrayOf(ink, ink, ink, if (major2) 0.18f else 0.06f), st.density * 0.8f, false)
         }
         val len = (hh * 0.35).toFloat()
         val oo = floatArrayOf(o[0].toFloat(), o[1].toFloat(), o[2].toFloat())
