@@ -26,6 +26,25 @@ internal class AutosaveSnapshotStore(
         )
     }
 
+    /**
+     * Cold-start recovery order: preferred snapshot first, then newest managed snapshots.
+     * Never inspect arbitrary paths from preferences or follow symlinks outside our directory.
+     * File size is only a cheap candidate filter; the engine must still reopen each candidate.
+     */
+    fun recoveryCandidates(preferredPath: String?): List<File> {
+        val root = runCatching { directory.canonicalFile }.getOrNull() ?: return emptyList()
+        val snapshots = directory.listFiles().orEmpty().filter { file ->
+            file.name.startsWith("autosave-") && file.name.endsWith(".sc") &&
+                file.isFile && file.length() > 0L &&
+                runCatching { file.canonicalFile.parentFile == root }.getOrDefault(false)
+        }.sortedWith(compareByDescending<File> { it.lastModified() }.thenByDescending { it.name })
+        val preferred = preferredPath?.let(::File)?.takeIf { file ->
+            file.isFile && file.length() > 0L &&
+                runCatching { file.canonicalFile.parentFile == root }.getOrDefault(false)
+        }
+        return (listOfNotNull(preferred) + snapshots).distinctBy { it.canonicalPath }
+    }
+
     /** An unsuccessful native save or preference commit cannot destroy the previous document. */
     fun finish(candidate: Candidate, nativeSaveSucceeded: Boolean): Boolean {
         if (!nativeSaveSucceeded || !candidate.target.isFile || candidate.target.length() <= 0L) {
