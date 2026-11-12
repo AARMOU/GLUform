@@ -1,0 +1,37 @@
+name: GLUform camera regression proof (temporary)
+on:
+  push:
+    branches:
+      - gpt/glu-camera-proof-20261112
+    paths:
+      - 'android/**'
+      - '.github/workflows/gluform-camera-proof-20261112.yml'
+permissions:
+  contents: read
+jobs:
+  camera-unit-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install Android 35 SDK
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Validate exact camera regression tests and Kotlin compilation
+        working-directory: android
+        run: |
+          gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.gl.CameraTest'
+          gradle --no-daemon :app:compileDebugKotlin
+      - name: Verify proof branch does not modify camera source beyond Copilot head
+        run: |
+          git fetch --depth=1 origin f1a139a00938970aa46e2534fc03a32f3eb0c7f9
+          git diff --exit-code FETCH_HEAD HEAD -- android/
