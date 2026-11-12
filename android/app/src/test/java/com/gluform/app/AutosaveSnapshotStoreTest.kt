@@ -301,4 +301,42 @@ class AutosaveSnapshotStoreTest {
         assertTrue(a.exists() && b.exists())
     }
 
+    @Test fun nativeRecoveryAlreadyQueuedRunsBeforeManualFilePreparationAndLateCallbackIsIgnored() {
+        // Mirrors Cad.exec / Cad.onEngine: both enqueue native work on one FIFO engine executor,
+        // while completion callbacks are posted separately to the Android main queue.
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val nativeOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val mainCallbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val recovery = AutosaveRecoverySequence(
+                listOf(File("autosave-old.sc")),
+                open = { _, done ->
+                    engine.execute {
+                        nativeOrder.add("native recovery open")
+                        mainCallbacks.put { done(true) }
+                    }
+                },
+                onRecovered = { fail("Cancelled recovery must not claim the document") },
+                onUnavailable = { fail("Cancelled recovery must not report exhaustion") }
+            )
+            recovery.start()
+            recovery.cancel() // Manual Open selected while native recovery is queued.
+            val manual = engine.submit {
+                nativeOrder.add("manual file preparation")
+                mainCallbacks.put { nativeOrder.add("manual open callback") }
+            }
+            manual.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf("native recovery open", "manual file preparation"), nativeOrder.toList())
+            // Deliver recovery completion late, after the manual file operation has run.
+            mainCallbacks.take().invoke()
+            mainCallbacks.take().invoke()
+            assertEquals(
+                listOf("native recovery open", "manual file preparation", "manual open callback"),
+                nativeOrder.toList()
+            )
+        } finally {
+            engine.shutdownNow()
+        }
+    }
+
 }
