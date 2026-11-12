@@ -23,6 +23,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -270,8 +271,17 @@ private fun sketchMirror() {
 @Composable
 private fun Viewport() {
     val density = LocalDensity.current.density
+    val hostView = LocalView.current
     val renderer = remember { Renderer() }
-    Box(Modifier.fillMaxSize().onSizeChanged { Diagnostics.event("ui.viewport.size", it.width.toString() + "x" + it.height); Cad.viewW = it.width; Cad.viewH = it.height; Cad.push() }) {
+    Box(Modifier.fillMaxSize().onSizeChanged { size ->
+        val imeBottom = if (android.os.Build.VERSION.SDK_INT >= 30)
+            hostView.rootWindowInsets?.getInsets(android.view.WindowInsets.Type.ime())?.bottom ?: -1
+        else -1
+        Diagnostics.event("ui.viewport.size", size.width.toString() + "x" + size.height +
+            " imeBottomPx=" + imeBottom + " inspectorExpanded=" + Ui.inspectorExpanded +
+            " form=" + (Cad.form != null) + " editingSketch=" + (Cad.sketch != null))
+        Cad.viewW = size.width; Cad.viewH = size.height; Cad.push()
+    }) {
         AndroidView(factory = { ctx ->
             Cad.density = density
             CadView(ctx, renderer, Cad).also { v -> Cad.onFrame = { st -> renderer.state = st; v.requestRender() }; Cad.push() }
@@ -349,7 +359,7 @@ private fun CompactInspector() {
                     else -> "Selection · ${Cad.selection.size}"
                 }
                 Text(label, Modifier.weight(1f).padding(start = 14.dp), fontWeight = FontWeight.SemiBold, maxLines = 1)
-                TextButton(onClick = { Ui.inspectorExpanded = !Ui.inspectorExpanded }) {
+                TextButton(onClick = { Ui.inspectorExpanded = !Ui.inspectorExpanded; Diagnostics.event("ui.inspector.manual", "expanded=" + Ui.inspectorExpanded) }) {
                     Text(if (Ui.inspectorExpanded) "Hide ▾" else "Details ▴")
                 }
             }
