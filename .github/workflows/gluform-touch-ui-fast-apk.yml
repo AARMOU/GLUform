@@ -1,0 +1,92 @@
+name: GLUform touch UI fast APK
+
+on:
+  push:
+    branches:
+      - gluese/touch-ui-overhaul-20261111
+    paths:
+      - 'android/**'
+      - '.github/workflows/gluform-touch-ui-fast-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ui-test-apk:
+    name: Reuse tested engine, build UI APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out isolated UI branch
+        uses: actions/checkout@v4
+
+      - name: Verify engine bridge is unchanged from successful rotation build
+        run: |
+          git fetch --depth=1 origin aaaded443e73b281a010f1a4648ab6137101dd5d
+          git diff --exit-code FETCH_HEAD HEAD -- rust/
+          echo "Native bridge source matches the proven rotation build."
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android API 35
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Verify prior successful engine build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/AARMOU/GLUform/actions/runs/43142673718 --jq '.head_sha + " " + .conclusion' | grep -Fx 'aaaded443e73b281a010f1a4648ab6137101dd5d success'
+
+      - name: Fetch ARM64 engine from successful rotation APK
+        uses: actions/download-artifact@v4
+        with:
+          name: GLUform-0.1.0-Fold-rotation-test-arm64
+          repository: AARMOU/GLUform
+          run-id: 43142673718
+          github-token: ${{ github.token }}
+          path: previous-apk
+
+      - name: Extract native CAD engine
+        run: |
+          test -s previous-apk/app-debug.apk
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          unzip -p previous-apk/app-debug.apk lib/arm64-v8a/libcadbridge.so > android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+          test -s android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+          file android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+
+      - name: Run Fold layout and touch UI tests
+        working-directory: android
+        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest'
+
+      - name: Assemble Android debug APK
+        working-directory: android
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify APK includes CAD engine
+        run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libcadbridge.so'
+
+      - name: Upload UI test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GLUform-0.1.0-touch-ui-fast-arm64
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -37,9 +37,16 @@ private fun arr(a: JSONArray?): List<JSONObject> = if (a == null) emptyList() el
 private fun fmt(v: Double) = if (kotlin.math.abs(v) >= 1e5) "%.4g".format(v) else "%.3f".format(v).trimEnd('0').trimEnd('.')
 
 @Composable
-fun LeftPanel(modifier: Modifier) {
+fun LeftPanel(modifier: Modifier, onDismiss: (() -> Unit)? = null) {
     Surface(modifier, color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
         Column {
+            if (onDismiss != null) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Design browser", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = onDismiss) { Text("Close ✕") }
+                }
+            }
             TabRow(selectedTabIndex = Ui.leftTab) {
                 Tab(Ui.leftTab == 0, onClick = { Ui.leftTab = 0 }, text = { Text("Browser") })
                 Tab(Ui.leftTab == 1, onClick = { Ui.leftTab = 1 }, text = { Text("Parameters") })
@@ -61,7 +68,7 @@ private fun Browser() {
         val n = b.optString("name")
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = b.optBoolean("visible", true), onCheckedChange = { Cad.exec("browser.visibility", JSONObject().put("visible", it).put("items", JSONArray().put(n))) })
-            Text(n, Modifier.weight(1f).clickable { Ui.ask = Ask.Prompt("Rename body", listOf("Name"), listOf(n)) { v -> Cad.exec("body.rename", JSONObject().put("body", n).put("name", v[0])) } }, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(n, Modifier.weight(1f).heightIn(min = 48.dp).clickable { Ui.ask = Ask.Prompt("Rename body", listOf("Name"), listOf(n)) { v -> Cad.exec("body.rename", JSONObject().put("body", n).put("name", v[0])) } }, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
     Head("Sketches (${sketches.size})")
@@ -70,7 +77,7 @@ private fun Browser() {
         val id = s.optLong("id")
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = s.optBoolean("visible"), onCheckedChange = { Cad.exec("browser.visibility", JSONObject().put("visible", it).put("items", JSONArray().put(id))) })
-            Column(Modifier.weight(1f).clickable { Cad.form = null; Cad.exec("sketch.edit", JSONObject().put("sketch", id)) }) {
+            Column(Modifier.weight(1f).heightIn(min = 48.dp).clickable { Cad.form = null; Cad.exec("sketch.edit", JSONObject().put("sketch", id)) }) {
                 Text(s.optString("name"), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Dim("${s.optInt("curves")} curves · ${s.optInt("profiles")} regions · " + if (s.optInt("dof") == 0) "constrained" else "${s.optInt("dof")} free")
             }
@@ -115,7 +122,7 @@ private fun Parameters() {
 
 @Composable
 private fun ParamRow(p: JSONObject, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(p.optString("name"), Modifier.width(72.dp), fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Column(Modifier.weight(1f)) {
             Text(p.optString("expression"), maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (p.isNull("error")) MaterialTheme.colorScheme.onSurface else Color(0xFFFF8A80))
@@ -143,7 +150,7 @@ fun RightPanel(modifier: Modifier) {
 @Composable
 private fun Chips(options: List<Pair<String, String>>, selected: (String) -> Boolean, onClick: (String) -> Unit) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        for ((v, l) in options) FilterChip(selected = selected(v), onClick = { onClick(v) }, label = { Text(l, maxLines = 1) })
+        for ((v, l) in options) FilterChip(selected = selected(v), onClick = { onClick(v) }, label = { Text(l, maxLines = 1) }, modifier = Modifier.heightIn(min = 48.dp))
     }
 }
 
@@ -151,7 +158,7 @@ private fun Chips(options: List<Pair<String, String>>, selected: (String) -> Boo
 private fun PickSlot(f: FormState, fd: Field, summary: String) {
     val on = f.active == fd.key
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).border(if (on) 2.dp else 1.dp, if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-        .clickable { f.active = if (on) null else fd.key; Cad.push() }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        .clickable { f.active = if (on) null else fd.key; Cad.push() }.heightIn(min = 48.dp).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(summary, Modifier.weight(1f), fontSize = 13.sp)
         if (!f.picks[fd.key].isNullOrEmpty()) Text("Clear", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, modifier = Modifier.clickable { f.picks.remove(fd.key); if (f.values[fd.key] == "Picked") f.values.remove(fd.key); Cad.push() })
     }
@@ -195,9 +202,9 @@ private fun FormPanel(f: FormState) {
     }
     Spacer(Modifier.height(14.dp))
     Row {
-        Button(onClick = { submitForm() }, enabled = Cad.busy == 0) { Text("OK") }
+        Button(onClick = { submitForm() }, enabled = Cad.busy == 0, modifier = Modifier.heightIn(min = 48.dp)) { Text("OK") }
         Spacer(Modifier.width(8.dp))
-        OutlinedButton(onClick = { Cad.form = null; Cad.push() }) { Text("Cancel") }
+        OutlinedButton(onClick = { Cad.form = null; Cad.push() }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Cancel") }
     }
 }
 
@@ -215,7 +222,7 @@ private fun SketchPanel(sk: SketchInfo) {
     Dim("Select one or two entities, then add a size.")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for ((ty, l) in listOf("auto" to "Dimension", "horizontal" to "Horizontal", "vertical" to "Vertical", "radius" to "Radius", "diameter" to "Diameter", "angle" to "Angle"))
-            AssistChip(onClick = {
+            AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = {
                 if (Cad.skSel.isEmpty()) Cad.message = "Select what to dimension first"
                 else Ui.ask = Ask.Prompt("$l dimension", listOf("Value or expression"), listOf(""), "Leave empty to keep the current size. Use a parameter name or a formula such as width / 2.") { v -> Cad.dimension(ty, v[0]) }
             }, label = { Text(l) })
@@ -224,7 +231,7 @@ private fun SketchPanel(sk: SketchInfo) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for ((k, l) in listOf("horizontal" to "Horizontal", "vertical" to "Vertical", "coincident" to "Coincident", "tangent" to "Tangent", "equal" to "Equal", "parallel" to "Parallel",
             "perpendicular" to "Perpendicular", "concentric" to "Concentric", "midpoint" to "Midpoint", "collinear" to "Collinear", "symmetry" to "Symmetric", "fix" to "Fix / unfix"))
-            AssistChip(onClick = { Cad.constrain(k) }, label = { Text(l) })
+            AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { Cad.constrain(k) }, label = { Text(l) })
     }
     TextButton(onClick = { Cad.exec("sketch.auto_constrain") }) { Text("Auto-constrain") }
     Head("Constraints (${sk.cons.size})")
@@ -256,11 +263,11 @@ private fun SelectionPanel() {
     Head("Do with selection")
     val edges = sel.any { it.kind == "edge" }; val faces = sel.any { it.kind == "face" }
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (edges) { AssistChip(onClick = { openTool("fillet") }, label = { Text("Fillet") }); AssistChip(onClick = { openTool("chamfer") }, label = { Text("Chamfer") }) }
-        if (faces) { AssistChip(onClick = { openTool("sketch") }, label = { Text("Sketch on face") }); AssistChip(onClick = { openTool("presspull") }, label = { Text("Press / Pull") })
-            AssistChip(onClick = { openTool("shell") }, label = { Text("Shell") }); AssistChip(onClick = { openTool("hole") }, label = { Text("Hole here") }); AssistChip(onClick = { openTool("offsetface") }, label = { Text("Offset face") }) }
-        AssistChip(onClick = { openTool("move") }, label = { Text("Move body") }); AssistChip(onClick = { openTool("appearance") }, label = { Text("Colour") })
-        AssistChip(onClick = { Cad.selection.clear(); Cad.push() }, label = { Text("Clear") })
+        if (edges) { AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("fillet") }, label = { Text("Fillet") }); AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("chamfer") }, label = { Text("Chamfer") }) }
+        if (faces) { AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("sketch") }, label = { Text("Sketch on face") }); AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("presspull") }, label = { Text("Press / Pull") })
+            AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("shell") }, label = { Text("Shell") }); AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("hole") }, label = { Text("Hole here") }); AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("offsetface") }, label = { Text("Offset face") }) }
+        AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("move") }, label = { Text("Move body") }); AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { openTool("appearance") }, label = { Text("Colour") })
+        AssistChip(modifier = Modifier.heightIn(min = 48.dp), onClick = { Cad.selection.clear(); Cad.push() }, label = { Text("Clear") })
     }
 }
 

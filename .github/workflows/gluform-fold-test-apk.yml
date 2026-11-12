@@ -1,9 +1,10 @@
-name: GLUform Fold rotation test APK
+name: GLUform touch UI test APK
 
 on:
   push:
     branches:
       - gluese/fold-rotation-viewport-20261111
+      - gluese/touch-ui-overhaul-20261111
     paths:
       - 'android/**'
       - 'rust/**'
@@ -69,7 +70,7 @@ jobs:
 
       - name: Run layout regression tests
         working-directory: android
-        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest'
+        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest'
 
       - name: Assemble debug-signed GLUform APK
         working-directory: android
@@ -83,7 +84,7 @@ jobs:
       - name: Upload temporary Fold test APK
         uses: actions/upload-artifact@v4
         with:
-          name: GLUform-0.1.0-Fold-rotation-test-arm64
+          name: GLUform-0.1.0-touch-ui-test-arm64
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
