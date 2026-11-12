@@ -88,11 +88,12 @@ object Diagnostics {
                 writer?.apply {
                     write(line)
                     newLine()
-                    unflushed++
-                    if (unflushed >= 32) {
-                        flush()
-                        unflushed = 0
-                    }
+                    // Always flush each event in diagnostic editions. The process may be
+                    // force-stopped immediately after a lifecycle callback, before a batch
+                    // of 32 events has accumulated. Low-volume JSONL append cost is
+                    // preferable to losing the crash-adjacent tail of a field test.
+                    flush()
+                    unflushed = 0
                 }
             } catch (t: Throwable) {
                 Log.e("GLUformDiagnostics", "Write failed", t)
