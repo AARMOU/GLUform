@@ -156,4 +156,94 @@ class AutosaveSnapshotStoreTest {
         assertEquals("last good", only.readText())
     }
 
+
+    @Test fun failedNativeOpenFallsBackOneSnapshotAtATime() {
+        val dir = tmp.newFolder("async-recovery")
+        val old = File(dir, "autosave-old.sc").apply { writeText("valid"); setLastModified(1000) }
+        val newest = File(dir, "autosave-latest.sc").apply { writeText("corrupt"); setLastModified(2000) }
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var recovered: File? = null
+        var exhausted = false
+        val store = AutosaveSnapshotStore(dir) { true }
+        val recovery = AutosaveRecoverySequence(
+            store.recoveryCandidates(newest.absolutePath),
+            open = { f, finish -> attempts.add(f); completions.add(finish) },
+            onRecovered = { recovered = it },
+            onUnavailable = { exhausted = true }
+        )
+        recovery.start()
+        assertEquals(listOf(newest), attempts)
+        completions[0](false)
+        assertEquals(listOf(newest, old), attempts)
+        assertNull(recovered)
+        completions[1](true)
+        assertEquals(old, recovered)
+        assertFalse(exhausted)
+        assertTrue(newest.exists())
+        assertTrue(old.exists())
+    }
+
+    @Test fun cancelledRecoveryIgnoresLateNativeFailureAndSuccess() {
+        val files = listOf(File("new.sc"), File("old.sc"))
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var recovered = false
+        var unavailable = false
+        val recovery = AutosaveRecoverySequence(
+            files,
+            open = { f, done -> attempts.add(f); completions.add(done) },
+            onRecovered = { recovered = true },
+            onUnavailable = { unavailable = true }
+        )
+        recovery.start()
+        recovery.cancel() // User explicitly opens a different document.
+        completions.single()(false)
+        completions.single()(true)
+        assertEquals(listOf(files.first()), attempts)
+        assertFalse(recovered)
+        assertFalse(unavailable)
+    }
+
+    @Test fun duplicatedCallbacksDoNotReopenOrOverwriteAnotherDocument() {
+        val files = listOf(File("broken.sc"), File("good.sc"))
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var successes = 0
+        var failures = 0
+        val recovery = AutosaveRecoverySequence(
+            files,
+            open = { f, done -> attempts.add(f); completions.add(done) },
+            onRecovered = { successes++ },
+            onUnavailable = { failures++ }
+        )
+        recovery.start()
+        completions[0](false)
+        completions[0](false)
+        assertEquals(files, attempts)
+        completions[1](true)
+        completions[1](false)
+        assertEquals(1, successes)
+        assertEquals(0, failures)
+        assertEquals(files, attempts)
+    }
+
+    @Test fun exhaustedRecoveryPreservesSnapshotsAndReportsOneFailure() {
+        val dir = tmp.newFolder("all-corrupt")
+        val a = File(dir, "autosave-a.sc").apply { writeText("invalid") }
+        val b = File(dir, "autosave-b.sc").apply { writeText("invalid") }
+        val attempted = mutableListOf<File>()
+        var failureCount = 0
+        val plan = AutosaveRecoverySequence(
+            listOf(a, b),
+            open = { f, done -> attempted.add(f); done(false) },
+            onRecovered = { fail("Native never succeeded") },
+            onUnavailable = { failureCount++ }
+        )
+        plan.start()
+        assertEquals(listOf(a, b), attempted)
+        assertEquals(1, failureCount)
+        assertTrue(a.exists() && b.exists())
+    }
+
 }

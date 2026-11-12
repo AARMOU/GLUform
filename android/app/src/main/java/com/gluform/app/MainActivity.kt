@@ -27,11 +27,7 @@ class MainActivity : ComponentActivity(), FileOps {
             Cad.start()
             val incoming = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data
             if (incoming != null) openUri(incoming, insert = false)
-            else prefs.getString("autosave", null)?.let(::File)?.takeIf { it.length() > 0 }?.let { auto ->
-                Cad.exec("doc.open", JSONObject().put("path", auto.absolutePath), quiet = true) { r ->
-                    if (r != null) { Cad.fit(); saveUri = prefs.getString("saveUri", null)?.let(Uri::parse) }
-                }
-            }
+            else restoreAutosave()
         }
         setContent { App(this) }
     }
@@ -41,10 +37,48 @@ class MainActivity : ComponentActivity(), FileOps {
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
 
+    private var autosaveRecovery: AutosaveRecoverySequence? = null
+
+    /** Try only app-managed snapshots, one native open at a time; never delete failed candidates. */
+    private fun restoreAutosave() {
+        val store = AutosaveSnapshotStore(File(filesDir, "autosave")) { path ->
+            prefs.edit().putString("autosave", path).commit()
+        }
+        val candidates = store.recoveryCandidates(prefs.getString("autosave", null))
+        if (candidates.isEmpty()) return
+        val recovery = AutosaveRecoverySequence(
+            candidates = candidates,
+            open = { file, finished ->
+                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true) { r ->
+                    finished(r != null)
+                }
+            },
+            onRecovered = { file ->
+                autosaveRecovery = null
+                Cad.fit()
+                saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
+                // A successful native reopen, not merely nonzero bytes, selects the backup.
+                if (prefs.getString("autosave", null) != file.absolutePath &&
+                    !prefs.edit().putString("autosave", file.absolutePath).commit()
+                ) {
+                    Cad.message = "Previous design recovered, but its recovery pointer was not saved"
+                }
+            },
+            onUnavailable = {
+                autosaveRecovery = null
+                Cad.message = "Autosave recovery failed; original snapshots were preserved"
+            }
+        )
+        autosaveRecovery = recovery
+        recovery.start()
+    }
+
     private val autosaveGeneration = AutosaveGeneration()
 
     override fun onStop() {
         super.onStop()
+        // Never autosave a partly restored/failed document over its recovery history.
+        if (autosaveRecovery != null) return
         // Do not erase an existing recovery snapshot if the engine has not finished loading.
         // A valid, empty timeline is still a document worth saving.
         if (Cad.doc.optJSONArray("timeline") == null) return
@@ -74,6 +108,11 @@ class MainActivity : ComponentActivity(), FileOps {
     }
 
     private fun openUri(u: Uri, insert: Boolean) {
+        // A user-selected document takes precedence over pending background recovery callbacks.
+        if (!insert) {
+            autosaveRecovery?.cancel()
+            autosaveRecovery = null
+        }
         val n = name(u); val dir = File(cacheDir, "in").apply { mkdirs() }; val f = File(dir, n)
         val ext = n.substringAfterLast('.', "").lowercase()
         Cad.onEngine({

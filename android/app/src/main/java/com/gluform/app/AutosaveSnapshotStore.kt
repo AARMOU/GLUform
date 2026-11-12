@@ -68,3 +68,45 @@ internal class AutosaveGeneration {
     fun next(): Long = ++serial
     fun isLatest(value: Long): Boolean = value == serial
 }
+
+/** Callback-driven cold-start recovery; attempts are sequential and stale callbacks are ignored.
+ * Native doc.open success is the only acceptance signal, not file existence or length.
+ */
+internal class AutosaveRecoverySequence(
+    private val candidates: List<File>,
+    private val open: (File, (Boolean) -> Unit) -> Unit,
+    private val onRecovered: (File) -> Unit,
+    private val onUnavailable: () -> Unit
+) {
+    private var index = 0
+    private var active = true
+    private var started = false
+
+    fun start() {
+        check(!started) { "Recovery can be started only once" }
+        started = true
+        attemptNext()
+    }
+
+    fun cancel() { active = false }
+
+    private fun attemptNext() {
+        if (!active) return
+        val file = candidates.getOrNull(index++) ?: run {
+            active = false
+            onUnavailable()
+            return
+        }
+        var completed = false
+        open(file) { success ->
+            // Ignore duplicated or late completions after cancellation/user document open.
+            if (active && !completed) {
+                completed = true
+                if (success) {
+                    active = false
+                    onRecovered(file)
+                } else attemptNext()
+            }
+        }
+    }
+}
