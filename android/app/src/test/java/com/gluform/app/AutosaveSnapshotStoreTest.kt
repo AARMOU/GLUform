@@ -252,6 +252,37 @@ class AutosaveSnapshotStoreTest {
         assertEquals(2, attempts.size)
     }
 
+    @Test fun repeatedBackgroundTransitionsKeepFinalRecoverableSnapshot() {
+        val dir = tmp.newFolder("repeated-background")
+        val original = File(dir, "autosave-original.sc").apply { writeText("last verified design") }
+        var committedPath = original.absolutePath
+        val store = AutosaveSnapshotStore(dir) { committedPath = it; true }
+        val generations = AutosaveGeneration()
+
+        val first = store.stage(committedPath)
+        val firstToken = generations.next()
+        first.target.writeText("partial first save")
+        val second = store.stage(committedPath)
+        val secondToken = generations.next()
+        second.target.writeText("second save failed")
+
+        // An obsolete completion must not replace the committed recovery pointer.
+        assertFalse(generations.isLatest(firstToken))
+        first.target.delete()
+        assertTrue(generations.isLatest(secondToken))
+        assertFalse(store.finish(second, nativeSaveSucceeded = false))
+        assertEquals(original.absolutePath, committedPath)
+        assertEquals("last verified design", original.readText())
+
+        val third = store.stage(committedPath)
+        generations.next()
+        third.target.writeText("new candidate; not independently reopen-verified")
+        assertTrue(store.finish(third, nativeSaveSucceeded = true))
+        assertEquals(third.target.absolutePath, committedPath)
+        assertTrue(original.exists())
+        assertEquals(listOf(third.target, original), store.recoveryCandidates(committedPath))
+    }
+
     @Test fun exhaustedRecoveryPreservesSnapshotsAndReportsOneFailure() {
         val dir = tmp.newFolder("all-corrupt")
         val a = File(dir, "autosave-a.sc").apply { writeText("invalid") }
