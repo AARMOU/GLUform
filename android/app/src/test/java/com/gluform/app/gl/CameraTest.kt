@@ -13,13 +13,15 @@ class CameraTest {
         for (perspective in listOf(false, true)) {
             val camera = Camera(perspective = perspective)
             for ((width, height) in listOf(0 to 100, -1 to 100, 100 to 0, 100 to -1)) {
+                assertEquals(1f, camera.projectionAspect(width, height), 0f)
                 assertNull(camera.project(doubleArrayOf(0.0, 0.0, 0.0), width, height))
                 val ray = camera.ray(0f, 0f, width, height)
                 assertArrayEquals(DoubleArray(6), ray, 0.0)
                 assertTrue(ray.all { it.isFinite() })
                 assertEquals(camera, camera.zoom(2f, 0f, 0f, width, height))
-                assertEquals(camera, camera.pan(1f, 1f, height))
+                if (height <= 0) assertEquals(camera, camera.pan(1f, 1f, height))
             }
+            assertEquals(4f / 3f, camera.projectionAspect(800, 600), 0f)
         }
     }
 

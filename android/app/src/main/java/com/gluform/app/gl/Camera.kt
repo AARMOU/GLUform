@@ -18,13 +18,14 @@ data class Camera(
     /** Half the height of the view at the target, in world units. */
     fun halfHeight() = distance * tan(fov / 2)
     fun worldPerPixel(h: Int) = 2 * halfHeight() / max(1, h)
+    internal fun projectionAspect(w: Int, h: Int) = if (w > 0 && h > 0) w.toFloat() / h else 1f
 
     fun viewProj(w: Int, h: Int, radius: Double): FloatArray {
         val e = eye(); val u = up()
         val v = FloatArray(16); val p = FloatArray(16); val o = FloatArray(16)
         // relative to the target, so large coordinates keep float precision
         Matrix.setLookAtM(v, 0, (e[0] - tx).toFloat(), (e[1] - ty).toFloat(), (e[2] - tz).toFloat(), 0f, 0f, 0f, u[0].toFloat(), u[1].toFloat(), u[2].toFloat())
-        val aspect = w.toFloat() / max(1, h)
+        val aspect = projectionAspect(w, h)
         val r = max(radius, distance * 0.5)
         if (perspective) {
             val near = max(distance - r * 4, distance * 0.02).toFloat()
@@ -39,6 +40,7 @@ data class Camera(
 
     /** World point to pixels (y down); null when behind the eye. */
     fun project(p: DoubleArray, w: Int, h: Int): FloatArray? {
+        if (w <= 0 || h <= 0) return null
         val d = doubleArrayOf(p[0] - tx, p[1] - ty, p[2] - tz)
         val r = right(); val u = up(); val b = back()
         val x = d[0] * r[0] + d[1] * r[1] + d[2] * r[2]
@@ -51,6 +53,7 @@ data class Camera(
 
     /** Ray through a pixel: origin (0..2) and unit direction (3..5). */
     fun ray(px: Float, py: Float, w: Int, h: Int): DoubleArray {
+        if (w <= 0 || h <= 0 || !px.isFinite() || !py.isFinite()) return DoubleArray(6)
         val hh = halfHeight()
         val sx = (px - w / 2.0) / (h / 2.0) * hh
         val sy = (h / 2.0 - py) / (h / 2.0) * hh
@@ -70,16 +73,21 @@ data class Camera(
         return copy(yaw = yaw + dxPx * 0.006, pitch = (pitch + dyPx * 0.006).coerceIn(-lim, lim))
     }
     fun pan(dxPx: Float, dyPx: Float, h: Int): Camera {
+        if (h <= 0 || !dxPx.isFinite() || !dyPx.isFinite()) return this
         val k = worldPerPixel(h); val r = right(); val u = up()
         return copy(tx = tx - r[0] * dxPx * k + u[0] * dyPx * k, ty = ty - r[1] * dxPx * k + u[1] * dyPx * k, tz = tz - r[2] * dxPx * k + u[2] * dyPx * k)
     }
     /** Zoom by `f` (>1 = closer), keeping the world point under the pixel fixed. */
     fun zoom(f: Float, px: Float, py: Float, w: Int, h: Int): Camera {
+        if (w <= 0 || h <= 0 || !f.isFinite() || f <= 0f || !px.isFinite() || !py.isFinite() || !distance.isFinite() || distance <= 0.0) return this
         val nd = (distance / f).coerceIn(1e-3, 1e7)
         val k = worldPerPixel(h) * (1 - nd / distance)
         val ox = px - w / 2f; val oy = py - h / 2f
         val r = right(); val u = up()
-        return copy(distance = nd, tx = tx + (r[0] * ox - u[0] * oy) * k, ty = ty + (r[1] * ox - u[1] * oy) * k, tz = tz + (r[2] * ox - u[2] * oy) * k)
+        val nx = tx + (r[0] * ox - u[0] * oy) * k
+        val ny = ty + (r[1] * ox - u[1] * oy) * k
+        val nz = tz + (r[2] * ox - u[2] * oy) * k
+        return if (k.isFinite() && nx.isFinite() && ny.isFinite() && nz.isFinite()) copy(distance = nd, tx = nx, ty = ny, tz = nz) else this
     }
     fun fit(b: FloatArray?): Camera {
         if (b == null) return copy(tx = 0.0, ty = 0.0, tz = 0.0, distance = 200.0)
