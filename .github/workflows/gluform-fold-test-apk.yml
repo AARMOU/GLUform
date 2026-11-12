@@ -1,0 +1,89 @@
+name: GLUform Fold rotation test APK
+
+on:
+  push:
+    branches:
+      - gluese/fold-rotation-viewport-20261111
+    paths:
+      - 'android/**'
+      - 'rust/**'
+      - '.github/workflows/gluform-fold-test-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-apk:
+    name: Build Android ARM64 test APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '1'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Check out GLUform (this branch only)
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK 35 and NDK
+        run: |
+          sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+
+      - name: Set up Rust with Android ARM64 target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Check out pinned SolidCraft v0.40.0 engine
+        run: |
+          git clone --branch v0.40.0 --depth 1 https://github.com/tangency-labs/solidcraft.git ../engine-src
+          test "$(git -C ../engine-src rev-parse HEAD)" = 'd806707b8fc7d564a448cf607e9d45404c7462f0'
+
+      - name: Compile SolidCraft JNI bridge for Android ARM64
+        run: |
+          export NDK_TOOLCHAIN="$ANDROID_HOME/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_TOOLCHAIN/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$NDK_TOOLCHAIN/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$NDK_TOOLCHAIN/llvm-ar"
+          cd rust
+          cargo build --release --lib --target aarch64-linux-android -j 1
+          mkdir -p ../android/app/src/main/jniLibs/arm64-v8a
+          cp target/aarch64-linux-android/release/libcadbridge.so ../android/app/src/main/jniLibs/arm64-v8a/
+          test -s ../android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+
+      - name: Run layout regression tests
+        working-directory: android
+        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest'
+
+      - name: Assemble debug-signed GLUform APK
+        working-directory: android
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify APK includes native CAD engine
+        run: |
+          test -s android/app/build/outputs/apk/debug/app-debug.apk
+          unzip -l android/app/build/outputs/apk/debug/app-debug.apk | grep 'lib/arm64-v8a/libcadbridge.so'
+
+      - name: Upload temporary Fold test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GLUform-0.1.0-Fold-rotation-test-arm64
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

@@ -83,18 +83,18 @@ fun App(files: FileOps) {
     MaterialTheme(colorScheme = scheme) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             BoxWithConstraints {
-                val compact = maxWidth < 720.dp
+                val compact = ViewportLayout.useCompactLayout(maxWidth.value)
                 Column(Modifier.fillMaxSize()) {
                     TopBar(files, compact)
                     Ribbon()
                     Row(Modifier.weight(1f)) {
-                        if (Ui.leftOpen && !compact) LeftPanel(Modifier.width(250.dp).fillMaxHeight())
+                        if (Ui.leftOpen && !compact) LeftPanel(Modifier.width(ViewportLayout.LEFT_PANEL_WIDTH_DP.dp).fillMaxHeight())
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                             Viewport()
-                            if (Ui.leftOpen && compact) LeftPanel(Modifier.width(250.dp).fillMaxHeight().align(Alignment.CenterStart))
+                            if (Ui.leftOpen && compact) LeftPanel(Modifier.width(ViewportLayout.LEFT_PANEL_WIDTH_DP.dp).fillMaxHeight().align(Alignment.CenterStart))
                             if (compact) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 300.dp)) { RightPanel(Modifier.fillMaxWidth()) }
                         }
-                        if (!compact) RightPanel(Modifier.width(300.dp).fillMaxHeight())
+                        if (!compact) RightPanel(Modifier.width(ViewportLayout.RIGHT_PANEL_WIDTH_DP.dp).fillMaxHeight())
                     }
                     Timeline()
                 }
