@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object Diagnostics {
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "glu-diagnostics") }
-    private val main = Handler(Looper.getMainLooper())
+    private var main: Handler? = null
     private val eventIds = AtomicLong(0)
     @Volatile private var sessionFile: File? = null
     @Volatile private var directory: File? = null
@@ -41,6 +41,7 @@ object Diagnostics {
         val dir = File(context.filesDir, "diagnostics")
         check(dir.isDirectory || dir.mkdirs()) { "Cannot create diagnostics directory" }
         val file = File(dir, "gluform-" + System.currentTimeMillis() + "-" + Process.myPid() + ".jsonl")
+        main = Handler(Looper.getMainLooper())
         directory = dir
         sessionFile = file
         initialized = true
@@ -123,7 +124,7 @@ object Diagnostics {
                 }
                 "Exported " + files.size + " session(s), " + bytes + " diagnostic bytes"
             }
-            main.post {
+            main?.post {
                 if (result.isSuccess) done(true, result.getOrThrow())
                 else done(false, "Diagnostic export failed: " + (result.exceptionOrNull()?.message ?: "unknown"))
             }
