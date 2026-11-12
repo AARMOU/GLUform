@@ -1,8 +1,10 @@
-@file:OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 
 package com.gluform.app.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,7 +50,13 @@ sealed class Ask {
     object ExportStl : Ask()
 }
 
-object Ui { var ask by mutableStateOf<Ask?>(null); var leftOpen by mutableStateOf(true); var leftTab by mutableStateOf(0) }
+object Ui {
+    var ask by mutableStateOf<Ask?>(null)
+    var leftOpen by mutableStateOf(true)
+    var leftTab by mutableStateOf(0)
+    var toolGroup by mutableStateOf("Create")
+    var inspectorExpanded by mutableStateOf(false)
+}
 
 fun openTool(id: String) {
     val t = Tools.byId(id); val f = FormState(t)
@@ -84,6 +92,9 @@ fun App(files: FileOps) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             BoxWithConstraints {
                 val compact = ViewportLayout.useCompactLayout(maxWidth.value)
+                LaunchedEffect(Cad.form, Cad.sketch) {
+                    if (Cad.form != null || Cad.sketch != null) Ui.inspectorExpanded = true
+                }
                 Column(Modifier.fillMaxSize()) {
                     TopBar(files, compact)
                     Ribbon()
@@ -91,8 +102,11 @@ fun App(files: FileOps) {
                         if (Ui.leftOpen && !compact) LeftPanel(Modifier.width(ViewportLayout.LEFT_PANEL_WIDTH_DP.dp).fillMaxHeight())
                         Box(Modifier.weight(1f).fillMaxHeight()) {
                             Viewport()
-                            if (Ui.leftOpen && compact) LeftPanel(Modifier.width(ViewportLayout.LEFT_PANEL_WIDTH_DP.dp).fillMaxHeight().align(Alignment.CenterStart))
-                            if (compact) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().heightIn(max = 300.dp)) { RightPanel(Modifier.fillMaxWidth()) }
+                            if (Ui.leftOpen && compact) LeftPanel(
+                                Modifier.width(ViewportLayout.LEFT_PANEL_WIDTH_DP.dp).fillMaxHeight().align(Alignment.CenterStart),
+                                onDismiss = { Ui.leftOpen = false }
+                            )
+                            if (compact) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) { CompactInspector() }
                         }
                         if (!compact) RightPanel(Modifier.width(ViewportLayout.RIGHT_PANEL_WIDTH_DP.dp).fillMaxHeight())
                     }
@@ -123,9 +137,12 @@ private fun TopBar(files: FileOps, compact: Boolean) {
                 Item("Export OBJ…") { close(); files.export("obj") }
                 Item("Export GLB…") { close(); files.export("glb") }
             }
+            TextButton(onClick = { files.save() }) { Text(if (Cad.dirty) "Save •" else "Save") }
             TextButton(enabled = Cad.canUndo, onClick = { Cad.undo() }) { Text("↶ Undo") }
             TextButton(enabled = Cad.canRedo, onClick = { Cad.redo() }) { Text("↷ Redo") }
-            Text(Cad.doc.optString("name", "Untitled") + if (Cad.dirty) " •" else "", modifier = Modifier.padding(horizontal = 10.dp), maxLines = 1, fontWeight = FontWeight.Medium)
+            Text(Cad.doc.optString("name", "Untitled"), modifier = Modifier.padding(horizontal = 10.dp).widthIn(max = if (compact) 110.dp else 180.dp),
+                maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
+            Text(Cad.doc.optString("units", "mm"), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             if (Cad.busy > 0) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(12.dp))
             Menu("View") { close ->
@@ -166,8 +183,13 @@ private fun Menu(label: String, content: @Composable ColumnScope.(close: () -> U
 private fun ToolButton(label: String, selected: Boolean = false, primary: Boolean = false, onClick: () -> Unit) {
     val c = MaterialTheme.colorScheme
     val bg = if (primary) c.primary else if (selected) c.primaryContainer else c.surfaceVariant
-    val fg = if (primary) c.onPrimary else c.onSurface
-    Box(Modifier.padding(horizontal = 3.dp).clip(RoundedCornerShape(8.dp)).background(bg).clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 9.dp)) {
+    val fg = if (primary) c.onPrimary else if (selected) c.onPrimaryContainer else c.onSurface
+    Box(
+        Modifier.padding(horizontal = 3.dp).clip(RoundedCornerShape(10.dp)).background(bg)
+            .border(if (selected) 1.dp else 0.dp, c.primary, RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick).heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center
+    ) {
         Text(label, color = fg, fontSize = 13.sp, maxLines = 1, fontWeight = if (selected || primary) FontWeight.SemiBold else FontWeight.Normal)
     }
 }
@@ -175,11 +197,28 @@ private fun ToolButton(label: String, selected: Boolean = false, primary: Boolea
 
 @Composable
 private fun Ribbon() {
-    Surface(color = MaterialTheme.colorScheme.surface) {
-        Row(Modifier.fillMaxWidth().height(50.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (Cad.sketch == null) {
-                for (g in Tools.groups) { GroupLabel(g); for (t in Tools.all.filter { it.group == g }) ToolButton(t.label, selected = Cad.form?.tool?.id == t.id, primary = t.id == "sketch") { openTool(t.id) } }
-            } else {
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) {
+        if (Cad.sketch == null) {
+            Column {
+                Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (g in Tools.groups) FilterChip(
+                        selected = Ui.toolGroup == g, onClick = { Ui.toolGroup = g },
+                        label = { Text(g) }, modifier = Modifier.heightIn(min = 40.dp)
+                    )
+                    TextButton(onClick = { Ui.ask = Ask.Palette }) { Text("Search tools") }
+                }
+                Row(Modifier.fillMaxWidth().height(58.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    val group = Ui.toolGroup.takeIf { it in Tools.groups } ?: Tools.groups.first()
+                    for (t in Tools.all.filter { it.group == group }) {
+                        ToolButton(t.label, selected = Cad.form?.tool?.id == t.id) { openTool(t.id) }
+                    }
+                }
+            }
+        } else {
+            Row(Modifier.fillMaxWidth().height(58.dp).horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
                 ToolButton("Finish sketch", primary = true) { Cad.finishChain(); Cad.exec("sketch.finish") }
                 ToolButton("Cancel") { Cad.finishChain(); Cad.exec("sketch.cancel") }
                 GroupLabel("Draw")
