@@ -125,4 +125,35 @@ class AutosaveSnapshotStoreTest {
         assertFalse(tracker.isLatest(id1))
         assertTrue(tracker.isLatest(id2))
     }
+    @Test fun recoveryPrefersCommittedCandidateThenFallsBackToOlderSnapshot() {
+        val dir = tmp.newFolder("recovery-order")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("good"); setLastModified(1000L) }
+        val latest = File(dir, "autosave-latest.sc").apply { writeText("corrupt"); setLastModified(2000L) }
+        val store = AutosaveSnapshotStore(dir) { true }
+        assertEquals(listOf(latest, previous), store.recoveryCandidates(latest.absolutePath))
+        // A failed native doc.open would advance to the next candidate; ranking does not
+        // mistake nonempty content for a validated CAD document.
+        assertEquals(previous, store.recoveryCandidates(latest.absolutePath)[1])
+        assertTrue(previous.exists())
+    }
+
+    @Test fun recoveryNeverReadsExternalOrEmptySnapshots() {
+        val dir = tmp.newFolder("recovery-contained")
+        val external = tmp.newFile("private.sc").apply { writeText("outside") }
+        File(dir, "autosave-empty.sc").createNewFile()
+        val valid = File(dir, "autosave-good.sc").apply { writeText("recoverable") }
+        File(dir, "unrelated.sc").writeText("not managed")
+        val store = AutosaveSnapshotStore(dir) { true }
+        assertEquals(listOf(valid), store.recoveryCandidates(external.absolutePath))
+        assertTrue(external.exists())
+    }
+
+    @Test fun repeatedRecoveryEnumerationDoesNotPruneFinalSnapshot() {
+        val dir = tmp.newFolder("recovery-retained")
+        val only = File(dir, "autosave-only.sc").apply { writeText("last good") }
+        val store = AutosaveSnapshotStore(dir) { true }
+        repeat(20) { assertEquals(listOf(only), store.recoveryCandidates(only.absolutePath)) }
+        assertEquals("last good", only.readText())
+    }
+
 }
