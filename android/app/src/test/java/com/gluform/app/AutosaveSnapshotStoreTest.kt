@@ -50,7 +50,7 @@ class AutosaveSnapshotStoreTest {
         assertTrue(old.exists())
     }
 
-    @Test fun successfulSaveCommitsPointerBeforePruningPriorFile() {
+    @Test fun successfulSaveCommitsPointerAndRetainsPriorRecoveryFile() {
         val dir = tmp.newFolder("success")
         val prior = File(dir, "old.sc").apply { writeText("prior") }
         var path: String? = prior.absolutePath
@@ -67,7 +67,25 @@ class AutosaveSnapshotStoreTest {
         assertTrue(oldWasPresentWhenPreferenceChanged)
         assertEquals(candidate.target.absolutePath, path)
         assertTrue(candidate.target.exists())
-        assertFalse(prior.exists())
+        assertTrue(prior.exists())
+        assertEquals("prior", prior.readText())
+    }
+
+    @Test fun nativeSuccessWithNonemptyCorruptOutputDoesNotDestroyPriorRecovery() {
+        val dir = tmp.newFolder("corrupt-output")
+        val prior = File(dir, "old.sc").apply { writeText("known-good") }
+        var committedPath: String? = prior.absolutePath
+        val store = AutosaveSnapshotStore(dir) { committedPath = it; true }
+        val candidate = store.stage(prior.absolutePath)
+        // Simulate a native callback that reports success despite a nonempty truncated file.
+        candidate.target.writeText("not a recoverable CAD document")
+
+        assertTrue(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(candidate.target.absolutePath, committedPath)
+        assertTrue(prior.exists())
+        assertEquals("known-good", prior.readText())
+        // New path may not be recoverable; prior file must remain available for a future
+        // explicit recovery/fallback implementation.
     }
 
     @Test fun failedPreferenceCommitKeepsKnownGoodAndDeletesCandidate() {
