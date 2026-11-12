@@ -30,7 +30,10 @@ internal class AutosaveSnapshotStore(
             candidate.target.delete()
             return false
         }
-        if (!setCommittedPath(candidate.target.absolutePath)) return false
+        if (!setCommittedPath(candidate.target.absolutePath)) {
+            candidate.target.delete()
+            return false
+        }
         // Deletion is deliberately AFTER the new snapshot is verified and committed.
         val old = candidate.previous
         if (old != null && old.absolutePath != candidate.target.absolutePath &&
