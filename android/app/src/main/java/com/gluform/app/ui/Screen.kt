@@ -274,6 +274,7 @@ private fun Viewport() {
             CadView(ctx, renderer, Cad).also { v -> Cad.onFrame = { st -> renderer.state = st; v.requestRender() }; Cad.push() }
         }, modifier = Modifier.fillMaxSize(), onRelease = { Cad.onFrame = null })
         SketchOverlay()
+        ViewPad(Modifier.align(Alignment.TopEnd).padding(8.dp))
         // status and hints
         Column(Modifier.align(Alignment.TopStart).padding(10.dp)) {
             val sk = Cad.sketch
@@ -298,6 +299,61 @@ private fun Viewport() {
         Cad.message?.let { m ->
             Snackbar(Modifier.align(Alignment.BottomCenter).padding(12.dp).widthIn(max = 560.dp), action = { TextButton(onClick = { Cad.message = null }) { Text("OK") } }) { Text(m, maxLines = 5, overflow = TextOverflow.Ellipsis) }
             LaunchedEffect(m) { kotlinx.coroutines.delay(7000); if (Cad.message == m) Cad.message = null }
+        }
+    }
+}
+
+/** One-tap camera controls; no desktop menu navigation required. */
+@Composable
+private fun ViewPad(modifier: Modifier = Modifier) {
+    fun setView(label: String) {
+        Camera.VIEWS.firstOrNull { it.first == label }?.second?.let { Cad.view(it.first, it.second) }
+    }
+    Surface(modifier, shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f), tonalElevation = 3.dp) {
+        Column(Modifier.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row {
+                TextButton(onClick = { setView("Top") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Top") }
+                TextButton(onClick = { setView("Front") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Front") }
+            }
+            Row {
+                TextButton(onClick = { setView("Right") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Right") }
+                TextButton(onClick = { setView("Home") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("3D") }
+            }
+            HorizontalDivider(Modifier.padding(horizontal = 6.dp))
+            Row {
+                TextButton(onClick = { Cad.fit() }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Fit") }
+                TextButton(onClick = { Cad.camera = Cad.camera.copy(perspective = !Cad.camera.perspective) },
+                    modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) {
+                    Text(if (Cad.camera.perspective) "Persp" else "Ortho", fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+/** Compact inspectors are reachable without obscuring the entire Fold canvas. */
+@Composable
+private fun CompactInspector() {
+    if (Cad.form == null && Cad.sketch == null && Cad.selection.isEmpty() && !Cad.measure) return
+    Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f), tonalElevation = 4.dp) {
+        Column {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+                val label = when {
+                    Cad.form != null -> Cad.form!!.tool.label
+                    Cad.sketch != null -> "Sketch constraints"
+                    Cad.measure -> "Measure · ${Cad.selection.size} selected"
+                    else -> "Selection · ${Cad.selection.size}"
+                }
+                Text(label, Modifier.weight(1f).padding(start = 14.dp), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                TextButton(onClick = { Ui.inspectorExpanded = !Ui.inspectorExpanded }) {
+                    Text(if (Ui.inspectorExpanded) "Hide ▾" else "Details ▴")
+                }
+            }
+            if (Ui.inspectorExpanded) {
+                HorizontalDivider()
+                Box(Modifier.fillMaxWidth().heightIn(max = 270.dp)) { RightPanel(Modifier.fillMaxWidth()) }
+            }
         }
     }
 }
@@ -347,24 +403,34 @@ private fun Timeline() {
     val tl = Cad.doc.optJSONArray("timeline") ?: JSONArray()
     val items = (0 until tl.length()).map { tl.getJSONObject(it) }
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
-        LazyRow(Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        LazyRow(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             item { Text("TIMELINE", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), modifier = Modifier.padding(end = 8.dp)) }
-            if (items.isEmpty()) item { Text("Features you create appear here, in order. Tap one to edit it.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) }
+            if (items.isEmpty()) item { Text("Features appear here · tap to edit, hold for options.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)) }
             itemsIndexed(items) { i, f ->
-                var open by remember { mutableStateOf(false) }
+                var open by remember(f.optLong("id")) { mutableStateOf(false) }
                 val err = !f.isNull("error"); val off = f.optBoolean("suppressed") || f.optBoolean("rolled_back")
                 val id = f.optLong("id"); val name = f.optString("name"); val isSketch = f.optString("type") == "Sketch"
+                val editFeature = {
+                    if (isSketch) {
+                        Cad.form = null
+                        Cad.exec("sketch.edit", JSONObject().put("sketch", id))
+                    } else {
+                        Cad.query("timeline.inspect", JSONObject().put("feature", id)) { r ->
+                            if (r != null) Ui.ask = Ask.FeatureInputs(id, name, r)
+                        }
+                    }
+                }
                 Box {
                     Row(Modifier.padding(horizontal = 3.dp).clip(RoundedCornerShape(8.dp)).background(if (err) Color(0xFF7A2A2A) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (off) 0.4f else 1f))
-                        .clickable { open = true }.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        .combinedClickable(onClick = { editFeature() }, onLongClick = { open = true })
+                        .heightIn(min = 48.dp).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(if (isSketch) "✎" else "◆", color = if (isSketch) Color(0xFF4FC3F7) else Accent, fontSize = 12.sp)
                         Spacer(Modifier.width(6.dp))
                         Text(name, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (off) 0.45f else 1f))
                     }
                     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                         if (err) DropdownMenuItem(text = { Text(f.optString("error"), color = Color(0xFFFF8A80), fontSize = 12.sp) }, onClick = {})
-                        if (isSketch) Item("Edit sketch") { open = false; Cad.form = null; Cad.exec("sketch.edit", JSONObject().put("sketch", id)) }
-                        else Item("Edit values…") { open = false; Cad.query("timeline.inspect", JSONObject().put("feature", id)) { r -> if (r != null) Ui.ask = Ask.FeatureInputs(id, name, r) } }
+                        Item(if (isSketch) "Edit sketch" else "Edit values…") { open = false; editFeature() }
                         Item("Rename…") { open = false; Ui.ask = Ask.Prompt("Rename", listOf("Name"), listOf(name)) { v -> Cad.exec("timeline.rename", JSONObject().put("feature", id).put("name", v[0])) } }
                         Item(if (f.optBoolean("suppressed")) "Unsuppress" else "Suppress") { open = false; Cad.exec("timeline.suppress", JSONObject().put("feature", id)) }
                         Item("Roll back to here") { open = false; Cad.exec("timeline.roll_to", JSONObject().put("position", i + 1)) }
