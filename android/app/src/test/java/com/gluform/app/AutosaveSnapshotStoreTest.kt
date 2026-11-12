@@ -228,6 +228,30 @@ class AutosaveSnapshotStoreTest {
         assertEquals(files, attempts)
     }
 
+    @Test fun manualOpenCancelsRecoveryAfterFirstFallbackFailure() {
+        val latest = File("autosave-corrupt.sc")
+        val backup = File("autosave-good.sc")
+        val callbacks = mutableListOf<(Boolean) -> Unit>()
+        val attempts = mutableListOf<File>()
+        var recovered: File? = null
+        var exhausted = false
+        val sequence = AutosaveRecoverySequence(
+            listOf(latest, backup),
+            open = { file, done -> attempts.add(file); callbacks.add(done) },
+            onRecovered = { recovered = it },
+            onUnavailable = { exhausted = true }
+        )
+        sequence.start()
+        callbacks[0](false) // A fallback open is now in flight.
+        assertEquals(listOf(latest, backup), attempts)
+        sequence.cancel() // Explicit user Open must win over a late native callback.
+        callbacks[1](true)
+        callbacks[1](false)
+        assertNull(recovered)
+        assertFalse(exhausted)
+        assertEquals(2, attempts.size)
+    }
+
     @Test fun exhaustedRecoveryPreservesSnapshotsAndReportsOneFailure() {
         val dir = tmp.newFolder("all-corrupt")
         val a = File(dir, "autosave-a.sc").apply { writeText("invalid") }
