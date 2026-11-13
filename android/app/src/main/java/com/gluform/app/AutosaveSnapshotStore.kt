@@ -114,7 +114,12 @@ internal class AutosaveRecoverySequence(
 /** A failed user document open must never turn unknown native state into a new autosave. */
 internal class ManualOpenAutosaveGate {
     private var safe = true
-    fun begin() { safe = false }
-    fun succeeded() { safe = true }
+    private var generation = 0L
+    fun begin(): Long { safe = false; return ++generation }
+    fun succeeded(request: Long): Boolean {
+        if (request != generation) return false
+        safe = true
+        return true
+    }
     fun mayAutosave(): Boolean = safe
 }
