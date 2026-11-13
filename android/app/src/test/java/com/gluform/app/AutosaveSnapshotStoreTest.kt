@@ -346,9 +346,9 @@ class AutosaveSnapshotStoreTest {
         assertFalse(gate.mayAutosave())
         // File read error and native doc.open failure must leave this gate closed.
         assertFalse(gate.mayAutosave())
-        gate.begin() // A second attempt cannot accidentally reopen the gate.
+        val latest = gate.begin() // A second attempt cannot accidentally reopen the gate.
         assertFalse(gate.mayAutosave())
-        gate.succeeded()
+        assertTrue(gate.succeeded(latest))
         assertTrue(gate.mayAutosave())
         gate.begin()
         assertFalse(gate.mayAutosave())
@@ -390,6 +390,28 @@ class AutosaveSnapshotStoreTest {
         assertEquals(original.absolutePath, preferred)
         assertEquals("known good design", original.readText())
         assertEquals(listOf(original), store.recoveryCandidates(preferred))
+    }
+
+    @Test fun supersededManualOpenSuccessCannotUnlockAutosave() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        val second = gate.begin()
+        assertFalse(gate.succeeded(first))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(second))
+        assertTrue(gate.mayAutosave())
+        val third = gate.begin()
+        assertFalse(gate.succeeded(second))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(third))
+    }
+
+    @Test fun lateManualOpenCallbackAfterFailedNewerRequestKeepsRecoverySafe() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        gate.begin() // Newer doc.open fails: no success callback is issued.
+        assertFalse(gate.succeeded(first))
+        assertFalse(gate.mayAutosave())
     }
 
 }
