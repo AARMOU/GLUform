@@ -127,7 +127,7 @@ object Diagnostics {
     }
 
     fun event(type: String, message: String) {
-        if (!initialized) return
+        if (!initialized || storagePaused) return
         // Reserve a slot before queueing. GL frame/touch spam must never grow an
         // unbounded backlog if storage is slow or the app is backgrounding.
         if (pendingEvents.incrementAndGet() > MAX_PENDING_EVENTS) {
