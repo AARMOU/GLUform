@@ -354,4 +354,42 @@ class AutosaveSnapshotStoreTest {
         assertFalse(gate.mayAutosave())
     }
 
+
+    @Test fun failedManualOpenAcrossBackgroundPreservesCommittedRecoveryPointer() {
+        val dir = tmp.newFolder("failed-manual-open-background")
+        val original = File(dir, "autosave-original.sc").apply { writeText("known good design") }
+        var preferred = original.absolutePath
+        var commits = 0
+        val store = AutosaveSnapshotStore(dir) { path ->
+            preferred = path
+            commits++
+            true
+        }
+        val gate = ManualOpenAutosaveGate()
+        val generations = AutosaveGeneration()
+
+        // A background save was queued before the user selected a different document.
+        val queued = store.stage(preferred)
+        val staleToken = generations.next()
+        queued.target.writeText("candidate saved before manual open")
+
+        gate.begin()
+        generations.next() // MainActivity.openUri invalidates queued save completions.
+        // Native doc.open fails; do not call gate.succeeded().
+        assertFalse(gate.mayAutosave())
+        assertFalse(generations.isLatest(staleToken))
+        queued.target.delete() // stale completion cleanup, never a pointer commit
+
+        // onStop must not enqueue another save while native document identity is unknown.
+        if (gate.mayAutosave()) {
+            val candidate = store.stage(preferred)
+            candidate.target.writeText("unsafe snapshot")
+            store.finish(candidate, nativeSaveSucceeded = true)
+        }
+        assertEquals(0, commits)
+        assertEquals(original.absolutePath, preferred)
+        assertEquals("known good design", original.readText())
+        assertEquals(listOf(original), store.recoveryCandidates(preferred))
+    }
+
 }
