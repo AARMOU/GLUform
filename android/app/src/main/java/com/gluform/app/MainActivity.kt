@@ -110,9 +110,9 @@ class MainActivity : ComponentActivity(), FileOps {
 
     private fun openUri(u: Uri, insert: Boolean) {
         // A user-selected document takes precedence over pending background recovery callbacks.
+        val openRequest = if (!insert) manualOpenGate.begin() else null
         if (!insert) {
             // A failed manual open must not autosave an unknown native document state.
-            manualOpenGate.begin()
             autosaveGeneration.next() // invalidate any pending background save completion
             autosaveRecovery?.cancel()
             autosaveRecovery = null
@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity(), FileOps {
                 if (r != null) {
                     Cad.fit()
                     if (!insert) {
-                        manualOpenGate.succeeded()
+                        if (!manualOpenGate.succeeded(openRequest!!)) return@exec
                         Cad.markSaved()
                         saveUri = if (ext == "sc" || ext == "solidcraft") u.also { runCatching { contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } } else null
                         prefs.edit().putString("saveUri", saveUri?.toString()).apply()
