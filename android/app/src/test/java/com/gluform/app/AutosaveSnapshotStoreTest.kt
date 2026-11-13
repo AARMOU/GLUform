@@ -339,4 +339,19 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun failedManualOpenNeverEnablesAutosaveOfUnknownNativeState() {
+        val gate = ManualOpenAutosaveGate()
+        assertTrue(gate.mayAutosave())
+        gate.begin()
+        assertFalse(gate.mayAutosave())
+        // File read error and native doc.open failure must leave this gate closed.
+        assertFalse(gate.mayAutosave())
+        gate.begin() // A second attempt cannot accidentally reopen the gate.
+        assertFalse(gate.mayAutosave())
+        gate.succeeded()
+        assertTrue(gate.mayAutosave())
+        gate.begin()
+        assertFalse(gate.mayAutosave())
+    }
+
 }
