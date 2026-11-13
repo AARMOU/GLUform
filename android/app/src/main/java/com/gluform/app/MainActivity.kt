@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity(), FileOps {
             autosaveRecovery?.cancel()
             autosaveRecovery = null
         }
-        val n = name(u); val dir = File(cacheDir, "in").apply { mkdirs() }; val f = File(dir, n)
+        val n = name(u); val f = IncomingDocumentFile.allocate(File(cacheDir, "in"), n)
         val ext = n.substringAfterLast('.', "").lowercase()
         Cad.onEngine({
             contentResolver.openInputStream(u)?.use { i -> f.outputStream().use { o -> i.copyTo(o) } } ?: return@onEngine "Could not read $n"
