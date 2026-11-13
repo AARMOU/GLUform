@@ -3,6 +3,7 @@ package com.gluform.app
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.content.res.Configuration
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,9 +20,14 @@ class MainActivity : ComponentActivity(), FileOps {
 
     private val opener = registerForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) pending?.invoke(u); pending = null }
     private val creator = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { u -> if (u != null) pending?.invoke(u); pending = null }
+    private val diagnosticsExporter = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) Diagnostics.export(contentResolver, uri) { _, message -> Cad.message = message }
+    }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Diagnostics.init(this)
+        Diagnostics.event("activity.create", "savedState=" + (b != null) + " initial=" + !started + " display=" + resources.displayMetrics.widthPixels + "x" + resources.displayMetrics.heightPixels)
         if (b == null && !started) {
             started = true
             Cad.start()
@@ -32,7 +38,13 @@ class MainActivity : ComponentActivity(), FileOps {
         setContent { App(this) }
     }
 
+    override fun onResume() { super.onResume(); Diagnostics.event("activity.resume", "ui resumed") }
+    override fun onPause() { Diagnostics.event("activity.pause", "ui backgrounded"); Diagnostics.flush(); super.onPause() }
+    override fun onDestroy() { Diagnostics.event("activity.destroy", "finishing=" + isFinishing); Diagnostics.flush(); super.onDestroy() }
+    override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); Diagnostics.event("activity.configuration", "orientation=" + newConfig.orientation + " size=" + resources.displayMetrics.widthPixels + "x" + resources.displayMetrics.heightPixels) }
+
     override fun onNewIntent(intent: Intent) {
+        Diagnostics.event("activity.newIntent", "action=" + intent.action)
         super.onNewIntent(intent)
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
@@ -46,15 +58,19 @@ class MainActivity : ComponentActivity(), FileOps {
             prefs.edit().putString("autosave", path).commit()
         }
         val candidates = store.recoveryCandidates(prefs.getString("autosave", null))
+        Diagnostics.event("autosave.recovery.candidates", "count=" + candidates.size + " sizes=" + candidates.map { it.length() })
         if (candidates.isEmpty()) return
         val recovery = AutosaveRecoverySequence(
             candidates = candidates,
             open = { file, finished ->
+                Diagnostics.event("autosave.recovery.attempt", "fileBytes=" + file.length())
                 Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true) { r ->
+                    Diagnostics.event("autosave.recovery.result", "success=" + (r != null) + " fileBytes=" + file.length())
                     finished(r != null)
                 }
             },
             onRecovered = { file ->
+                Diagnostics.event("autosave.recovery.succeeded", "fileBytes=" + file.length())
                 autosaveRecovery = null
                 Cad.fit()
                 saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
@@ -66,6 +82,7 @@ class MainActivity : ComponentActivity(), FileOps {
                 }
             },
             onUnavailable = {
+                Diagnostics.event("autosave.recovery.failed", "no native-openable snapshots")
                 autosaveRecovery = null
                 Cad.message = "Autosave recovery failed; original snapshots were preserved"
             }
@@ -78,6 +95,8 @@ class MainActivity : ComponentActivity(), FileOps {
 
     override fun onStop() {
         super.onStop()
+        Diagnostics.event("activity.stop", "autosaveRecovery=" + (autosaveRecovery != null) + " timeline=" + (Cad.doc.optJSONArray("timeline")?.length() ?: -1))
+        Diagnostics.flush()
         // Never autosave a partly restored/failed document over its recovery history.
         if (autosaveRecovery != null || !manualOpenGate.mayAutosave()) return
         // Do not erase an existing recovery snapshot if the engine has not finished loading.
@@ -92,7 +111,9 @@ class MainActivity : ComponentActivity(), FileOps {
             return
         }
         val request = autosaveGeneration.next()
+        Diagnostics.event("autosave.stage", "generation=" + request + " previousPresent=" + (candidate.previous?.isFile == true))
         Cad.exec("file.save_as", JSONObject().put("path", candidate.target.absolutePath).put("overwrite", true), quiet = true) { result ->
+            Diagnostics.event("autosave.callback", "generation=" + request + " success=" + (result != null) + " size=" + candidate.target.length() + " isLatest=" + autosaveGeneration.isLatest(request))
             if (!autosaveGeneration.isLatest(request)) {
                 candidate.target.delete() // superseded by a more recent snapshot
                 return@exec
@@ -160,6 +181,10 @@ class MainActivity : ComponentActivity(), FileOps {
 
     override fun open() { pending = { openUri(it, insert = false) }; opener.launch(arrayOf("*/*")) }
     override fun insert() { pending = { openUri(it, insert = true) }; opener.launch(arrayOf("*/*")) }
+
+    override fun exportDiagnostics() {
+        diagnosticsExporter.launch("GLUform-diagnostics-" + System.currentTimeMillis() + ".txt")
+    }
 
     override fun save() {
         val u = saveUri

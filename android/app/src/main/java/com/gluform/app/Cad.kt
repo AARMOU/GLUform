@@ -82,6 +82,7 @@ object Cad : ViewportHost {
     // ---------- engine ----------
 
     fun start() {
+        Diagnostics.event("engine.start", "initial command list requested")
         engine.execute {
             val cmds = runCatching { JSONObject(Native.execute("engine.commands", "{}")).getJSONArray("result") }.getOrNull()
             val list = ArrayList<JSONObject>()
@@ -96,8 +97,11 @@ object Cad : ViewportHost {
     private fun snapshot(): Snap {
         val status = runCatching { JSONObject(Native.status()) }.getOrDefault(JSONObject())
         val d = runCatching { JSONObject(Native.execute("document.inspect", "{}")).optJSONObject("result") }.getOrNull() ?: JSONObject()
-        val sc = runCatching { Scene.parse(Native.scene()) }.getOrDefault(Scene.EMPTY)
+        val rawScene = runCatching { Native.scene() }.onFailure { Diagnostics.event("scene.native.error", it.toString()) }.getOrNull()
+        val sc = runCatching { if (rawScene == null) Scene.EMPTY else Scene.parse(rawScene) }
+            .onFailure { Diagnostics.event("scene.decode.error", it.toString()) }.getOrDefault(Scene.EMPTY)
         val sk = if (status.isNull("active_sketch")) null else runCatching { sketchInfo() }.getOrNull()
+        Diagnostics.event("engine.snapshot", "nativeBytes=" + (rawScene?.size ?: -1) + " bodies=" + sc.bodies.size + " sketches=" + sc.sketches.size + " lineCounts=" + sc.sketches.map { it.lines.size } + " active=" + (sc.active != null) + " inspectedSketch=" + (sk != null) + " revision=" + status.optLong("revision") + " timeline=" + (d.optJSONArray("timeline")?.length() ?: -1))
         return Snap(sc, d, status, sk)
     }
 
@@ -142,6 +146,7 @@ object Cad : ViewportHost {
     private fun apply(s: Snap) {
         val wasSketch = sketch?.id
         scene = s.scene; doc = s.doc; sketch = s.sketch
+        Diagnostics.event("scene.apply", "prevSketch=" + wasSketch + " newSketch=" + s.sketch?.id + " bodies=" + s.scene.bodies.size + " sketches=" + s.scene.sketches.size + " activeLines=" + (s.scene.active?.lines?.size ?: 0))
         canUndo = s.status.optBoolean("can_undo"); canRedo = s.status.optBoolean("can_redo"); revision = s.status.optLong("revision"); dirty = revision != savedRevision
         if (s.sketch == null) { skSel.clear(); placed.clear(); cursor = null } else skSel.removeAll { id -> s.sketch.points.none { it.id == id } && s.sketch.curves.none { it.id == id } && s.sketch.dims.none { it.id == id } }
         if (s.sketch != null && wasSketch != s.sketch.id) { sketchTool = "select"; lookAtSketch() }
@@ -151,13 +156,17 @@ object Cad : ViewportHost {
 
     /** Run a command, then refresh everything the UI shows. `then` gets the result, or null when it failed. */
     fun exec(cmd: String, params: JSONObject = JSONObject(), quiet: Boolean = false, then: (JSONObject?) -> Unit = {}) {
+        val begun = System.nanoTime()
+        Diagnostics.event("engine.command.begin", "name=" + cmd + " quiet=" + quiet + " params=" + Diagnostics.safeParams(params))
         busy++
         engine.execute {
             val r = runCatching { JSONObject(Native.execute(cmd, params.toString())) }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "failed") }
+            Diagnostics.event("engine.command.nativeResult", "name=" + cmd + " success=" + r.optBoolean("ok") + " error=" + (if (r.optBoolean("ok")) "" else r.optString("error")) + " durationMs=" + ((System.nanoTime() - begun) / 1000000.0))
             val snap = snapshot()
             main.post {
                 busy--
                 apply(snap)
+                Diagnostics.event("engine.command.applied", "name=" + cmd + " success=" + r.optBoolean("ok") + " totalMs=" + ((System.nanoTime() - begun) / 1000000.0) + " pending=" + busy)
                 if (r.optBoolean("ok")) {
                     val res = r.opt("result")
                     val w = (res as? JSONObject)?.optString("warning", "")
@@ -227,6 +236,7 @@ object Cad : ViewportHost {
             for (c in info.curves) if (c.id in skSel) for (part in c.parts) ov.add(Overlay(world(sk, part), 0xFFFFA028.toInt(), 3.2f))
             preview(sk)?.let { ov.addAll(it) }
         }
+        Diagnostics.event("scene.publish", "bodies=" + scene.bodies.size + " sketches=" + scene.sketches.size + " activeLines=" + (scene.active?.lines?.size ?: 0) + " overlayCount=" + ov.size + " view=" + viewW + "x" + viewH + " cameraDistance=" + cam.distance + " tool=" + sketchTool + " placements=" + placed.size)
         onFrame?.invoke(RenderState(scene, cam, faces, ov, shaded, edges, grid, xray, density, light))
     }
 

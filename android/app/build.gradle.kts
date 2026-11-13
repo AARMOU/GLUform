@@ -16,6 +16,11 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     buildTypes {
+        debug {
+            // Install beside normal GLUform so device tests cannot remove existing designs.
+            applicationIdSuffix = ".diagnostics"
+            versionNameSuffix = "-diagnostics"
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")

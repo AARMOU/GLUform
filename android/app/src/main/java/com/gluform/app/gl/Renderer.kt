@@ -4,6 +4,7 @@ import android.opengl.GLES30.*
 import android.opengl.GLSurfaceView
 import com.gluform.app.engine.Scene
 import com.gluform.app.engine.SketchView
+import com.gluform.app.Diagnostics
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.microedition.khronos.egl.EGLConfig
@@ -34,12 +35,13 @@ class Renderer : GLSurfaceView.Renderer {
     private var selVao = 0; private var selIbo = 0
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        Diagnostics.event("gl.surface.created", "vendor=" + glGetString(GL_VENDOR) + " renderer=" + glGetString(GL_RENDERER) + " version=" + glGetString(GL_VERSION))
         meshProg = program(MESH_VS, MESH_FS); lineProg = program(LINE_VS, LINE_FS)
         built = null; bodies = emptyList(); selVao = 0; selIbo = 0
         for (b in listOf(edgeBuf, sketchBuf, activeBuf, dynBuf, topBuf)) { b.vao = 0; b.count = 0 }
         glEnable(GL_DEPTH_TEST); glDepthFunc(GL_LEQUAL)
     }
-    override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) { width = w; height = h; glViewport(0, 0, w, h) }
+    override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) { width = w; height = h; glViewport(0, 0, w, h); Diagnostics.event("gl.surface.size", w.toString() + "x" + h) }
 
     override fun onDrawFrame(gl: GL10?) {
         val st = state; val cam = st.camera
@@ -116,6 +118,8 @@ class Renderer : GLSurfaceView.Renderer {
         fill(topBuf, top, topIdx, true)
         drawLines(topBuf, mvp, tgt, 0f)
         glEnable(GL_DEPTH_TEST); glDisable(GL_BLEND)
+        val glError = glGetError()
+        Diagnostics.event("gl.frame", "size=" + width + "x" + height + " bodies=" + st.scene.bodies.size + " sketches=" + st.scene.sketches.size + " sketchLineCounts=" + st.scene.sketches.map { it.lines.size } + " activeLines=" + (st.scene.active?.lines?.size ?: 0) + " gpuStaticIndices=" + sketchBuf.count + " gpuActiveIndices=" + activeBuf.count + " overlayIndices=" + topBuf.count + " error=" + glError + " cameraDistance=" + cam.distance)
     }
 
     private fun grid(st: RenderState, out: ArrayList<Float>, idx: ArrayList<Int>) {
@@ -227,6 +231,7 @@ class Renderer : GLSurfaceView.Renderer {
             else polyline(sv, si, l.pts, c, d * (if (l.construction) 0.9f else 1.4f), false)
         }
         fill(sketchBuf, sv, si, false); fill(activeBuf, av, ai, false)
+        Diagnostics.event("gl.upload", "bodies=" + scene.bodies.size + " sketches=" + scene.sketches.size + " activeLines=" + scene.sketches.filter { it.active }.sumOf { it.lines.size } + " gpuStaticIndices=" + si.size + " gpuActiveIndices=" + ai.size)
     }
 
     private fun program(vs: String, fs: String): Int {
