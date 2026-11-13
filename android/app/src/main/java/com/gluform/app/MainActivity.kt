@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity(), FileOps {
     }
 
     private var autosaveRecovery: AutosaveRecoverySequence? = null
+    private val manualOpenGate = ManualOpenAutosaveGate()
 
     /** Try only app-managed snapshots, one native open at a time; never delete failed candidates. */
     private fun restoreAutosave() {
@@ -78,7 +79,7 @@ class MainActivity : ComponentActivity(), FileOps {
     override fun onStop() {
         super.onStop()
         // Never autosave a partly restored/failed document over its recovery history.
-        if (autosaveRecovery != null) return
+        if (autosaveRecovery != null || !manualOpenGate.mayAutosave()) return
         // Do not erase an existing recovery snapshot if the engine has not finished loading.
         // A valid, empty timeline is still a document worth saving.
         if (Cad.doc.optJSONArray("timeline") == null) return
@@ -110,6 +111,9 @@ class MainActivity : ComponentActivity(), FileOps {
     private fun openUri(u: Uri, insert: Boolean) {
         // A user-selected document takes precedence over pending background recovery callbacks.
         if (!insert) {
+            // A failed manual open must not autosave an unknown native document state.
+            manualOpenGate.begin()
+            autosaveGeneration.next() // invalidate any pending background save completion
             autosaveRecovery?.cancel()
             autosaveRecovery = null
         }
@@ -126,6 +130,7 @@ class MainActivity : ComponentActivity(), FileOps {
                 if (r != null) {
                     Cad.fit()
                     if (!insert) {
+                        manualOpenGate.succeeded()
                         Cad.markSaved()
                         saveUri = if (ext == "sc" || ext == "solidcraft") u.also { runCatching { contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } } else null
                         prefs.edit().putString("saveUri", saveUri?.toString()).apply()
