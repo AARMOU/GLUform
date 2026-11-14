@@ -5,6 +5,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DiagnosticsTest {
+    @Test fun exportFailureNeverExposesProviderPathsOrTokens() {
+        val error = IllegalStateException("Failed at content://provider/private/design.sc?token=abc123 /storage/emulated/0/design.sc")
+        val message = Diagnostics.exportFailureMessage(error)
+        assertTrue(message.startsWith("Diagnostic export failed:"))
+        assertFalse(message.contains("design.sc"))
+        assertFalse(message.contains("abc123"))
+        assertTrue(message.contains("[REDACTED_URI]"))
+        assertTrue(message.contains("[REDACTED_PATH]"))
+    }
+
     @Test fun parameterRedactionKeepsSketchDimensionsButNotSecrets() {
         val nested = JSONObject().put("length", 20).put("api_token", "shhh")
         val input = JSONObject().put("points", nested).put("path", "/private/design.sc")
