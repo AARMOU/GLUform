@@ -16,7 +16,7 @@ class TouchUiTest {
         assertEquals(Tools.all.size, Tools.all.map { it.id }.distinct().size)
     }
 
-    @Test fun viewPadTargetsAreBackedByCameraViews() {
+    @Test fun viewMenuRetainsAllCoreCameraViewsWithoutViewportOverlay() {
         val supported = Camera.VIEWS.map { it.first }.toSet()
         assertTrue(supported.containsAll(listOf("Top", "Front", "Right", "Home")))
     }

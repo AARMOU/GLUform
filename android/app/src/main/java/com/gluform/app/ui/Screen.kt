@@ -23,6 +23,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -37,7 +38,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
-interface FileOps { fun open(); fun insert(); fun save(); fun saveAs(); fun export(format: String, quality: String = "standard") }
+interface FileOps { fun open(); fun insert(); fun save(); fun saveAs(); fun export(format: String, quality: String = "standard"); fun exportDiagnostics() }
 
 val Accent = Color(0xFFF2A33A)
 
@@ -92,8 +93,10 @@ fun App(files: FileOps) {
         Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
             BoxWithConstraints {
                 val compact = ViewportLayout.useCompactLayout(maxWidth.value)
+                LaunchedEffect(compact) { Diagnostics.event("ui.layout", "compact=" + compact + " availableDp=" + maxWidth.value) }
                 LaunchedEffect(Cad.form, Cad.sketch) {
                     if (Cad.form != null || Cad.sketch != null) Ui.inspectorExpanded = true
+                    Diagnostics.event("ui.inspector.auto", "expanded=" + Ui.inspectorExpanded + " activeSketch=" + (Cad.sketch?.id ?: -1) + " form=" + (Cad.form != null))
                 }
                 Column(Modifier.fillMaxSize()) {
                     TopBar(files, compact)
@@ -130,6 +133,7 @@ private fun TopBar(files: FileOps, compact: Boolean) {
                 HorizontalDivider()
                 Item("Save") { close(); files.save() }
                 Item("Save as…") { close(); files.saveAs() }
+                Item("Export diagnostics…") { close(); files.exportDiagnostics() }
                 HorizontalDivider()
                 Item("Export STL…") { close(); Ui.ask = Ask.ExportStl }
                 Item("Export STEP…") { close(); files.export("step") }
@@ -267,14 +271,22 @@ private fun sketchMirror() {
 @Composable
 private fun Viewport() {
     val density = LocalDensity.current.density
+    val hostView = LocalView.current
     val renderer = remember { Renderer() }
-    Box(Modifier.fillMaxSize().onSizeChanged { Cad.viewW = it.width; Cad.viewH = it.height; Cad.push() }) {
+    Box(Modifier.fillMaxSize().onSizeChanged { size ->
+        val imeBottom = if (android.os.Build.VERSION.SDK_INT >= 30)
+            hostView.rootWindowInsets?.getInsets(android.view.WindowInsets.Type.ime())?.bottom ?: -1
+        else -1
+        Diagnostics.event("ui.viewport.size", size.width.toString() + "x" + size.height +
+            " imeBottomPx=" + imeBottom + " inspectorExpanded=" + Ui.inspectorExpanded +
+            " form=" + (Cad.form != null) + " editingSketch=" + (Cad.sketch != null))
+        Cad.viewW = size.width; Cad.viewH = size.height; Cad.push()
+    }) {
         AndroidView(factory = { ctx ->
             Cad.density = density
             CadView(ctx, renderer, Cad).also { v -> Cad.onFrame = { st -> renderer.state = st; v.requestRender() }; Cad.push() }
         }, modifier = Modifier.fillMaxSize(), onRelease = { Cad.onFrame = null })
         SketchOverlay()
-        ViewPad(Modifier.align(Alignment.TopEnd).padding(8.dp))
         // status and hints
         Column(Modifier.align(Alignment.TopStart).padding(10.dp)) {
             val sk = Cad.sketch
@@ -303,35 +315,6 @@ private fun Viewport() {
     }
 }
 
-/** One-tap camera controls; no desktop menu navigation required. */
-@Composable
-private fun ViewPad(modifier: Modifier = Modifier) {
-    fun setView(label: String) {
-        Camera.VIEWS.firstOrNull { it.first == label }?.second?.let { Cad.view(it.first, it.second) }
-    }
-    Surface(modifier, shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f), tonalElevation = 3.dp) {
-        Column(Modifier.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row {
-                TextButton(onClick = { setView("Top") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Top") }
-                TextButton(onClick = { setView("Front") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Front") }
-            }
-            Row {
-                TextButton(onClick = { setView("Right") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Right") }
-                TextButton(onClick = { setView("Home") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("3D") }
-            }
-            HorizontalDivider(Modifier.padding(horizontal = 6.dp))
-            Row {
-                TextButton(onClick = { Cad.fit() }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Fit") }
-                TextButton(onClick = { Cad.camera = Cad.camera.copy(perspective = !Cad.camera.perspective) },
-                    modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) {
-                    Text(if (Cad.camera.perspective) "Persp" else "Ortho", fontSize = 11.sp)
-                }
-            }
-        }
-    }
-}
-
 /** Compact inspectors are reachable without obscuring the entire Fold canvas. */
 @Composable
 private fun CompactInspector() {
@@ -346,7 +329,7 @@ private fun CompactInspector() {
                     else -> "Selection · ${Cad.selection.size}"
                 }
                 Text(label, Modifier.weight(1f).padding(start = 14.dp), fontWeight = FontWeight.SemiBold, maxLines = 1)
-                TextButton(onClick = { Ui.inspectorExpanded = !Ui.inspectorExpanded }) {
+                TextButton(onClick = { Ui.inspectorExpanded = !Ui.inspectorExpanded; Diagnostics.event("ui.inspector.manual", "expanded=" + Ui.inspectorExpanded) }) {
                     Text(if (Ui.inspectorExpanded) "Hide ▾" else "Details ▴")
                 }
             }
