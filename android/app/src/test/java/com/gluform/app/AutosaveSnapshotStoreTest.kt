@@ -578,4 +578,26 @@ class AutosaveSnapshotStoreTest {
         assertEquals("unrelated user file", unrelated.readText())
     }
 
+    @Test fun exhaustedRecoveryInhibitsAutosaveUntilNewValidManualOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val attempted = mutableListOf<String>()
+        val recovery = AutosaveRecoverySequence(
+            candidates = listOf(tmp.newFile("failed-recovery.sc")),
+            open = { file, done ->
+                attempted.add(file.name)
+                done(false)
+            },
+            onRecovered = { fail("failed recovery cannot report success") },
+            onUnavailable = { gate.begin() }
+        )
+        recovery.start()
+        assertEquals(listOf("failed-recovery.sc"), attempted)
+        assertFalse("failed recovery must not overwrite preserved snapshots", gate.mayAutosave())
+        val request = gate.begin()
+        assertFalse(gate.succeeded(request - 1))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+    }
+
 }
