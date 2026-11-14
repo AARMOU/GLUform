@@ -431,4 +431,38 @@ class AutosaveSnapshotStoreTest {
         assertTrue(gate.mayAutosave())
     }
 
+    @Test fun queuedSupersededNativeSuccessAfterNewerFailedOpenCannotEnableAutosave() {
+        // Model the FIFO native queue separately from the posted main-thread callbacks.
+        // The older native open may succeed even after the newer request has been selected.
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val gate = ManualOpenAutosaveGate()
+            val callbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val nativeOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val first = gate.begin()
+            val firstNative = engine.submit {
+                nativeOrder.add("first native open succeeds")
+                callbacks.put { assertFalse(gate.succeeded(first)) }
+            }
+            val second = gate.begin()
+            val secondNative = engine.submit {
+                nativeOrder.add("second native open fails")
+                callbacks.put { /* A failed native open does not call gate.succeeded(). */ }
+            }
+            firstNative.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            secondNative.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf("first native open succeeds", "second native open fails"), nativeOrder.toList())
+            // The older success is delivered after both native commands have finished.
+            callbacks.take().invoke()
+            callbacks.take().invoke()
+            assertFalse(gate.mayAutosave())
+            // Only a subsequent, genuinely successful open can restore save eligibility.
+            val third = gate.begin()
+            assertTrue(gate.succeeded(third))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            engine.shutdownNow()
+        }
+    }
+
 }
