@@ -51,7 +51,11 @@ internal class AutosaveSnapshotStore(
             candidate.target.delete()
             return false
         }
-        if (!setCommittedPath(candidate.target.absolutePath)) {
+        // A preference backend can throw on storage failure. Preserve the previous
+        // committed recovery pointer and clean up this uncommitted candidate.
+        val committed = runCatching { setCommittedPath(candidate.target.absolutePath) }
+            .getOrDefault(false)
+        if (!committed) {
             candidate.target.delete()
             return false
         }
