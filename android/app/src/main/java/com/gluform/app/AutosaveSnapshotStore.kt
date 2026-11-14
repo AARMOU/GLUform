@@ -39,7 +39,8 @@ internal class AutosaveSnapshotStore(
                 runCatching { file.canonicalFile.parentFile == root }.getOrDefault(false)
         }.sortedWith(compareByDescending<File> { it.lastModified() }.thenByDescending { it.name })
         val preferred = preferredPath?.let(::File)?.takeIf { file ->
-            file.isFile && file.length() > 0L &&
+            file.name.startsWith("autosave-") && file.name.endsWith(".sc") &&
+                file.isFile && file.length() > 0L &&
                 runCatching { file.canonicalFile.parentFile == root }.getOrDefault(false)
         }
         return (listOfNotNull(preferred) + snapshots).distinctBy { it.canonicalPath }
