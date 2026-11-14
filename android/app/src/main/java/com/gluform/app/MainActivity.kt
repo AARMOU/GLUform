@@ -84,6 +84,8 @@ class MainActivity : ComponentActivity(), FileOps {
             onUnavailable = {
                 Diagnostics.event("autosave.recovery.failed", "no native-openable snapshots")
                 autosaveRecovery = null
+                // Native recovery exhausted: block background saves until a valid manual open.
+                manualOpenGate.begin()
                 Cad.message = "Autosave recovery failed; original snapshots were preserved"
             }
         )
