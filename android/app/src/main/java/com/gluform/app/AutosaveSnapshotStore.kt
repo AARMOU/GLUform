@@ -51,7 +51,10 @@ internal class AutosaveSnapshotStore(
             candidate.target.delete()
             return false
         }
-        if (!setCommittedPath(candidate.target.absolutePath)) {
+        // Preference storage may throw; keep the previous committed pointer intact.
+        val committed = runCatching { setCommittedPath(candidate.target.absolutePath) }
+            .getOrDefault(false)
+        if (!committed) {
             candidate.target.delete()
             return false
         }
