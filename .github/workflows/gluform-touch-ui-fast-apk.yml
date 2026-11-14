@@ -1,10 +1,11 @@
-name: GLUform touch UI fast APK
+name: GLUform unified P0 debug APK
 
 on:
   push:
     branches:
       - gluese/touch-ui-overhaul-20261111
       - glu/worker-p0-autosave-20261111
+      - glu/integration-p0-unified-20261113
     paths:
       - 'android/**'
       - '.github/workflows/gluform-touch-ui-fast-apk.yml'
@@ -20,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - name: Check out isolated UI branch
+      - name: Check out unified integration branch
         uses: actions/checkout@v4
 
       - name: Verify engine bridge is unchanged from successful rotation build
@@ -73,7 +74,7 @@ jobs:
 
       - name: Run Fold layout and touch UI tests
         working-directory: android
-        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest' --tests 'com.gluform.app.AutosaveSnapshotStoreTest' --tests 'com.gluform.app.IncomingDocumentFileTest'
+        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest' --tests 'com.gluform.app.AutosaveSnapshotStoreTest' --tests 'com.gluform.app.IncomingDocumentFileTest' --tests 'com.gluform.app.DiagnosticsTest'
 
       - name: Assemble Android debug APK
         working-directory: android
@@ -87,7 +88,7 @@ jobs:
       - name: Upload UI test APK
         uses: actions/upload-artifact@v4
         with:
-          name: GLUform-0.1.0-touch-ui-fast-arm64
+          name: GLUform-0.1.0-P0-unified-arm64
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
