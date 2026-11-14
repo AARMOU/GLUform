@@ -211,10 +211,14 @@ object Diagnostics {
             }
             main?.post {
                 if (result.isSuccess) done(true, result.getOrThrow())
-                else done(false, "Diagnostic export failed: " + (result.exceptionOrNull()?.message ?: "unknown"))
+                else done(false, exportFailureMessage(result.exceptionOrNull()))
             }
         }
     }
+
+    /** Document providers may include user-selected paths or URIs in exception messages. */
+    internal fun exportFailureMessage(error: Throwable?): String =
+        "Diagnostic export failed: " + safeMessage(error?.message ?: "unknown")
 
     /** Keep file names out of shared logs; do not print documents or authentication secrets. */
     fun safeParams(params: JSONObject): String {
