@@ -550,4 +550,21 @@ class AutosaveSnapshotStoreTest {
         assertEquals(listOf(first, backup), attempts)
         assertEquals(0, unavailable)
     }
+
+    @Test fun throwingPreferenceCommitPreservesLastValidSnapshot() {
+        val dir = tmp.newFolder("commit-throws")
+        val prior = File(dir, "autosave-prior.sc").apply { writeText("known-good") }
+        var committedPath = prior.absolutePath
+        val store = AutosaveSnapshotStore(dir) {
+            throw IllegalStateException("preferences storage unavailable")
+        }
+        val candidate = store.stage(committedPath)
+        candidate.target.writeText("uncommitted candidate")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(prior.absolutePath, committedPath)
+        assertEquals("known-good", prior.readText())
+        assertFalse(candidate.target.exists())
+        assertEquals(listOf(prior), store.recoveryCandidates(committedPath))
+    }
 }
