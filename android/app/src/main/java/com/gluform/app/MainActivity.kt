@@ -123,10 +123,10 @@ class MainActivity : ComponentActivity(), FileOps {
             contentResolver.openInputStream(u)?.use { i -> f.outputStream().use { o -> i.copyTo(o) } } ?: return@onEngine "Could not read $n"
             null
         }) { err ->
-            if (err != null) { Cad.message = err; return@onEngine }
-            // A newer user Open can supersede this request while its bytes are being copied.
-            // Do not enqueue a stale native doc.open after that newer request.
+            // Ignore both success and failure from superseded file preparations. An old
+            // read failure must not replace the current document's status or enqueue an open.
             if (!insert && !manualOpenGate.isPending(openRequest!!)) return@onEngine
+            if (err != null) { Cad.message = err; return@onEngine }
             val cmd = if (!insert) "doc.open" else if (ext in setOf("step", "stp", "igs", "iges", "fcstd", "3dm")) "file.insert_step" else "file.insert_mesh"
             Cad.form = null; Cad.selection.clear()
             Cad.exec(cmd, JSONObject().put("path", f.absolutePath)) { r ->
