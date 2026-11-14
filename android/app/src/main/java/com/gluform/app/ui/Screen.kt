@@ -274,7 +274,6 @@ private fun Viewport() {
             CadView(ctx, renderer, Cad).also { v -> Cad.onFrame = { st -> renderer.state = st; v.requestRender() }; Cad.push() }
         }, modifier = Modifier.fillMaxSize(), onRelease = { Cad.onFrame = null })
         SketchOverlay()
-        ViewPad(Modifier.align(Alignment.TopEnd).padding(8.dp))
         // status and hints
         Column(Modifier.align(Alignment.TopStart).padding(10.dp)) {
             val sk = Cad.sketch
@@ -303,34 +302,6 @@ private fun Viewport() {
     }
 }
 
-/** One-tap camera controls; no desktop menu navigation required. */
-@Composable
-private fun ViewPad(modifier: Modifier = Modifier) {
-    fun setView(label: String) {
-        Camera.VIEWS.firstOrNull { it.first == label }?.second?.let { Cad.view(it.first, it.second) }
-    }
-    Surface(modifier, shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f), tonalElevation = 3.dp) {
-        Column(Modifier.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Row {
-                TextButton(onClick = { setView("Top") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Top") }
-                TextButton(onClick = { setView("Front") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Front") }
-            }
-            Row {
-                TextButton(onClick = { setView("Right") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Right") }
-                TextButton(onClick = { setView("Home") }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("3D") }
-            }
-            HorizontalDivider(Modifier.padding(horizontal = 6.dp))
-            Row {
-                TextButton(onClick = { Cad.fit() }, modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) { Text("Fit") }
-                TextButton(onClick = { Cad.camera = Cad.camera.copy(perspective = !Cad.camera.perspective) },
-                    modifier = Modifier.widthIn(min = 52.dp).heightIn(min = 48.dp)) {
-                    Text(if (Cad.camera.perspective) "Persp" else "Ortho", fontSize = 11.sp)
-                }
-            }
-        }
-    }
-}
 
 /** Compact inspectors are reachable without obscuring the entire Fold canvas. */
 @Composable
