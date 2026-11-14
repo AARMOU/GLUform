@@ -67,6 +67,9 @@ class MainActivity : ComponentActivity(), FileOps {
             },
             onUnavailable = {
                 autosaveRecovery = null
+                // All native recovery opens failed: the engine document state is unknown.
+                // Do not overwrite preserved snapshots when the activity backgrounds.
+                manualOpenGate.begin()
                 Cad.message = "Autosave recovery failed; original snapshots were preserved"
             }
         )
