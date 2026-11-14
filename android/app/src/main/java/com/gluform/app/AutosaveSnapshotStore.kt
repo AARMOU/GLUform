@@ -115,11 +115,21 @@ internal class AutosaveRecoverySequence(
 internal class ManualOpenAutosaveGate {
     private var safe = true
     private var generation = 0L
-    fun begin(): Long { safe = false; return ++generation }
+    private var awaitingSuccess = false
+
+    fun begin(): Long {
+        safe = false
+        awaitingSuccess = true
+        return ++generation
+    }
+
+    /** Accept each matching native open completion once, never a duplicate or stale callback. */
     fun succeeded(request: Long): Boolean {
-        if (request != generation) return false
+        if (request != generation || !awaitingSuccess) return false
+        awaitingSuccess = false
         safe = true
         return true
     }
+
     fun mayAutosave(): Boolean = safe
 }
