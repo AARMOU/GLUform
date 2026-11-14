@@ -566,4 +566,15 @@ class AutosaveSnapshotStoreTest {
         assertFalse(candidate.target.exists())
         assertEquals(listOf(prior), store.recoveryCandidates(committedPath))
     }
+    @Test fun preferredRecoveryPointerCannotOpenUnmanagedFileInsideSnapshotDirectory() {
+        val dir = tmp.newFolder("unmanaged-preference")
+        val unrelated = File(dir, "imported-design.sc").apply { writeText("unrelated user file") }
+        val managed = File(dir, "autosave-known.sc").apply { writeText("preserved snapshot") }
+        val store = AutosaveSnapshotStore(dir) { true }
+
+        assertEquals(listOf(managed), store.recoveryCandidates(unrelated.absolutePath))
+        assertTrue(unrelated.exists())
+        assertEquals("unrelated user file", unrelated.readText())
+    }
+
 }
