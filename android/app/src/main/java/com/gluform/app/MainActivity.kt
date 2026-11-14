@@ -124,6 +124,9 @@ class MainActivity : ComponentActivity(), FileOps {
             null
         }) { err ->
             if (err != null) { Cad.message = err; return@onEngine }
+            // A newer user Open can supersede this request while its bytes are being copied.
+            // Do not enqueue a stale native doc.open after that newer request.
+            if (!insert && !manualOpenGate.isPending(openRequest!!)) return@onEngine
             val cmd = if (!insert) "doc.open" else if (ext in setOf("step", "stp", "igs", "iges", "fcstd", "3dm")) "file.insert_step" else "file.insert_mesh"
             Cad.form = null; Cad.selection.clear()
             Cad.exec(cmd, JSONObject().put("path", f.absolutePath)) { r ->

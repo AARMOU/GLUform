@@ -131,5 +131,8 @@ internal class ManualOpenAutosaveGate {
         return true
     }
 
+    /** A superseded request must not enqueue another native doc.open after file preparation. */
+    fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
+
     fun mayAutosave(): Boolean = safe
 }

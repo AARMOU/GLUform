@@ -431,6 +431,23 @@ class AutosaveSnapshotStoreTest {
         assertTrue(gate.mayAutosave())
     }
 
+    @Test fun supersededFilePreparationCannotQueueNativeOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        assertTrue(gate.isPending(first))
+        val second = gate.begin()
+        // Simulate the first document finishing its async file copy after a second Open.
+        val nativeOpens = mutableListOf<Long>()
+        if (gate.isPending(first)) nativeOpens.add(first)
+        assertTrue(nativeOpens.isEmpty())
+        assertTrue(gate.isPending(second))
+        if (gate.isPending(second)) nativeOpens.add(second)
+        assertEquals(listOf(second), nativeOpens)
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(second))
+        assertFalse(gate.isPending(second)) // Duplicate completion cannot requeue.
+    }
+
     @Test fun queuedSupersededNativeSuccessAfterNewerFailedOpenCannotEnableAutosave() {
         // Model the FIFO native queue separately from the posted main-thread callbacks.
         // The older native open may succeed even after the newer request has been selected.
