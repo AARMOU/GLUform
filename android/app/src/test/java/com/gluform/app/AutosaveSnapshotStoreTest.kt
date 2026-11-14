@@ -482,4 +482,27 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun supersededStagingFailureCannotReplaceNewerOpenStatus() {
+        val gate = ManualOpenAutosaveGate()
+        val older = gate.begin()
+        val newer = gate.begin()
+        var message = "Opening newer document"
+        val nativeOpens = mutableListOf<Long>()
+        // Mirrors MainActivity's completion ordering: generation check precedes error UI.
+        fun completeStaging(request: Long, error: String?) {
+            if (!gate.isPending(request)) return
+            if (error != null) {
+                message = error
+                return
+            }
+            nativeOpens.add(request)
+        }
+        completeStaging(older, "Could not read older document")
+        assertEquals("Opening newer document", message)
+        assertTrue(nativeOpens.isEmpty())
+        completeStaging(newer, null)
+        assertEquals(listOf(newer), nativeOpens)
+        assertFalse(gate.mayAutosave())
+    }
+
 }
