@@ -213,7 +213,7 @@ object Diagnostics {
             } else {
                 sanitizedHistoricalRecord(line.toString(StandardCharsets.UTF_8.name()))
             }
-            val bytes = (record + "\\n").toByteArray(StandardCharsets.UTF_8)
+            val bytes = (record + "\n").toByteArray(StandardCharsets.UTF_8)
             out.write(bytes)
             exported += bytes.size.toLong()
             line.reset()
