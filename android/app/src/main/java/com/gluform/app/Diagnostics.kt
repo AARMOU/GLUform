@@ -71,6 +71,16 @@ object Diagnostics {
     internal fun mayRecord(nextSessionBytes: Long, availableBytes: Long): Boolean =
         nextSessionBytes <= MAX_SESSION_BYTES && availableBytes >= MIN_FREE_BYTES
 
+    /** Emergency crash writes must honor the same storage cap as normal event writes. */
+    internal fun mayRecordCrash(
+        existingBytes: Long,
+        crashBytes: Long,
+        availableBytes: Long,
+        paused: Boolean
+    ): Boolean = !paused && existingBytes >= 0L && crashBytes > 0L &&
+        crashBytes <= MAX_SESSION_BYTES && existingBytes <= MAX_SESSION_BYTES - crashBytes &&
+        mayRecord(existingBytes + crashBytes, availableBytes)
+
     /** Runs only on the diagnostics executor. */
     private fun writeLine(line: String) {
         val file = sessionFile ?: return
@@ -102,7 +112,8 @@ object Diagnostics {
                 sessionBytes = file.length()
                 writer = BufferedWriter(OutputStreamWriter(FileOutputStream(file, true), StandardCharsets.UTF_8), 65536)
             } catch (t: Throwable) {
-                Log.e("GLUformDiagnostics", "Could not open diagnostics writer", t)
+                storagePaused = true
+                Log.e("GLUformDiagnostics", "Could not open diagnostics writer; logging paused")
             }
         }
         val previous = Thread.getDefaultUncaughtExceptionHandler()
@@ -114,9 +125,18 @@ object Diagnostics {
                     .put("thread", thread.name)
                     .put("message", crashSummary(error))
                     .toString() + "\n"
-                FileOutputStream(file, true).use { output ->
-                    output.write(line.toByteArray(StandardCharsets.UTF_8))
-                    output.fd.sync()
+                val bytes = line.toByteArray(StandardCharsets.UTF_8)
+                // Crash records bypass the normal executor but not the storage safety gate.
+                // Use the on-disk length; normal event writes are flushed after each event.
+                if (mayRecordCrash(
+                        file.length(), bytes.size.toLong(),
+                        file.parentFile?.usableSpace ?: 0L, storagePaused
+                    )
+                ) {
+                    FileOutputStream(file, true).use { output ->
+                        output.write(bytes)
+                        output.fd.sync()
+                    }
                 }
             } catch (_: Throwable) { }
             previous?.uncaughtException(thread, error)
@@ -156,7 +176,8 @@ object Diagnostics {
                     .put("message", safeMessage(message))
                     .toString())
             } catch (t: Throwable) {
-                Log.e("GLUformDiagnostics", "Write failed", t)
+                storagePaused = true
+                Log.e("GLUformDiagnostics", "Write failed; logging paused")
             } finally {
                 pendingEvents.decrementAndGet()
             }
