@@ -414,4 +414,21 @@ class AutosaveSnapshotStoreTest {
         assertFalse(gate.mayAutosave())
     }
 
+    @Test fun repeatedNativeSuccessCallbackIsAcceptedExactlyOnce() {
+        val gate = ManualOpenAutosaveGate()
+        val request = gate.begin()
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+        // A duplicate callback must not mark the same document saved twice.
+        assertFalse(gate.succeeded(request))
+        // Opening another document closes the gate until that request succeeds.
+        val newer = gate.begin()
+        assertFalse(gate.succeeded(request))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(newer))
+        assertFalse(gate.succeeded(newer))
+        assertTrue(gate.mayAutosave())
+    }
+
 }
