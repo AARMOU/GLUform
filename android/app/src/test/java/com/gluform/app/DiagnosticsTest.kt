@@ -69,4 +69,16 @@ class DiagnosticsTest {
         assertTrue(log.contains("1.25"))
         assertTrue(log.contains("-2.5"))
     }
+    @Test fun uncaughtCrashWritesObeySessionDiskAndPauseLimits() {
+        val mib = 1024L * 1024L
+        val full = 512L * mib
+        val reserve = 256L * mib
+        assertTrue(Diagnostics.mayRecordCrash(full - 12L, 12L, reserve, paused = false))
+        assertFalse(Diagnostics.mayRecordCrash(full - 12L, 13L, reserve, paused = false))
+        assertFalse(Diagnostics.mayRecordCrash(1L, 12L, reserve - 1L, paused = false))
+        assertFalse(Diagnostics.mayRecordCrash(1L, 12L, reserve, paused = true))
+        assertFalse(Diagnostics.mayRecordCrash(Long.MAX_VALUE, 12L, reserve, paused = false))
+        assertFalse(Diagnostics.mayRecordCrash(0L, 0L, reserve, paused = false))
+    }
+
 }
