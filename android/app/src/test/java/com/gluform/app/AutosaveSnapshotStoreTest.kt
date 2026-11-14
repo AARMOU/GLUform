@@ -505,4 +505,49 @@ class AutosaveSnapshotStoreTest {
         assertFalse(gate.mayAutosave())
     }
 
+
+    @Test fun nativeOpenSubmissionExceptionFallsBackWithoutDiscardingSnapshots() {
+        val dir = tmp.newFolder("submission-failure")
+        val first = File(dir, "autosave-first.sc").apply { writeText("first") }
+        val backup = File(dir, "autosave-backup.sc").apply { writeText("backup") }
+        val attempts = mutableListOf<File>()
+        var recovered: File? = null
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) throw IllegalStateException("native submission unavailable")
+                done(true)
+            },
+            onRecovered = { recovered = it },
+            onUnavailable = { unavailable++ }
+        ).start()
+        assertEquals(listOf(first, backup), attempts)
+        assertEquals(backup, recovered)
+        assertEquals(0, unavailable)
+        assertTrue(first.exists() && backup.exists())
+    }
+
+    @Test fun callbackThenSubmissionExceptionCannotAdvanceRecoveryTwice() {
+        val first = File("autosave-first.sc")
+        val backup = File("autosave-backup.sc")
+        val attempts = mutableListOf<File>()
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) {
+                    done(false)
+                    throw IllegalStateException("callback already delivered")
+                }
+                done(true)
+            },
+            onRecovered = { assertEquals(backup, it) },
+            onUnavailable = { unavailable++ }
+        ).start()
+        assertEquals(listOf(first, backup), attempts)
+        assertEquals(0, unavailable)
+    }
 }

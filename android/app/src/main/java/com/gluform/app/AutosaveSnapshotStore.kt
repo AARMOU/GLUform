@@ -98,7 +98,7 @@ internal class AutosaveRecoverySequence(
             return
         }
         var completed = false
-        open(file) { success ->
+        val finish: (Boolean) -> Unit = { success ->
             // Ignore duplicated or late completions after cancellation/user document open.
             if (active && !completed) {
                 completed = true
@@ -107,6 +107,13 @@ internal class AutosaveRecoverySequence(
                     onRecovered(file)
                 } else attemptNext()
             }
+        }
+        // A synchronous failure to submit a native open must not strand recovery.
+        // The completion guard also handles an implementation that calls back then throws.
+        try {
+            open(file, finish)
+        } catch (_: Exception) {
+            finish(false)
         }
     }
 }
