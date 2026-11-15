@@ -37,7 +37,8 @@ class MainActivity : ComponentActivity(), FileOps {
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
 
-    private var autosaveRecovery: AutosaveRecoverySequence? = null
+    // Read by Cad's engine executor when deciding whether a queued recovery open is still valid.
+    @Volatile private var autosaveRecovery: AutosaveRecoverySequence? = null
     private val manualOpenGate = ManualOpenAutosaveGate()
 
     /** Try only app-managed snapshots, one native open at a time; never delete failed candidates. */
