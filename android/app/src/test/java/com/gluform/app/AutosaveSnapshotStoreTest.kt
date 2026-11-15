@@ -646,4 +646,39 @@ class AutosaveSnapshotStoreTest {
         assertFalse("stale success must not enable autosave", gate.mayAutosave())
     }
 
+
+    @Test fun cancelledRecoveryIsInvisibleToQueuedEngineThreadBeforeNativeOpen() {
+        val queued = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val nativeCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            lateinit var recovery: AutosaveRecoverySequence
+            recovery = AutosaveRecoverySequence(
+                candidates = listOf(File("autosave-cancelled.sc")),
+                open = { _, done ->
+                    engine.execute {
+                        queued.countDown()
+                        check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        // Same cross-thread admission predicate used by MainActivity's Cad.exec.
+                        if (recovery.isActive()) {
+                            nativeCalls.incrementAndGet()
+                            done(true)
+                        }
+                    }
+                },
+                onRecovered = { fail("Cancelled recovery must not succeed") },
+                onUnavailable = { fail("Cancelled recovery must not report exhaustion") }
+            )
+            recovery.start()
+            assertTrue(queued.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            recovery.cancel() // UI thread cancels while the engine thread is blocked.
+            release.countDown()
+            engine.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(0, nativeCalls.get())
+        } finally {
+            release.countDown()
+            engine.shutdownNow()
+        }
+    }
 }
