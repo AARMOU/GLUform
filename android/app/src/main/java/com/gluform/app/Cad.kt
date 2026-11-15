@@ -162,6 +162,9 @@ object Cad : ViewportHost {
             val snap = snapshot()
             main.post {
                 busy--
+                // A newer open may supersede this command after JNI finishes but before
+                // the main-thread callback runs. Never publish its obsolete UI snapshot.
+                if (!shouldExecute()) return@post
                 apply(snap)
                 if (r.optBoolean("ok")) {
                     val res = r.opt("result")
