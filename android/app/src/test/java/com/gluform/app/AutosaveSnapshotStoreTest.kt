@@ -600,4 +600,30 @@ class AutosaveSnapshotStoreTest {
         assertTrue(gate.mayAutosave())
     }
 
+    @Test fun supersededQueuedRecoveryOpenIsRejectedBeforeNativeExecution() {
+        val queued = mutableListOf<() -> Unit>()
+        val nativeCalls = mutableListOf<String>()
+        val admitted = java.util.concurrent.atomic.AtomicBoolean(true)
+        val recovery = AutosaveRecoverySequence(
+            candidates = listOf(File("recovery.sc")),
+            open = { _, finished ->
+                // Mirror Cad.exec's engine-thread admission check, not its callback check.
+                queued += {
+                    if (admitted.get()) {
+                        nativeCalls += "doc.open"
+                        finished(true)
+                    }
+                }
+            },
+            onRecovered = { fail("Cancelled recovery must not report success") },
+            onUnavailable = { fail("Cancelled recovery must not exhaust") }
+        )
+        admitted.set(true)
+        recovery.start()
+        recovery.cancel()
+        admitted.set(recovery.isActive())
+        queued.single().invoke()
+        assertTrue(nativeCalls.isEmpty())
+    }
+
 }
