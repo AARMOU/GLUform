@@ -50,7 +50,8 @@ class MainActivity : ComponentActivity(), FileOps {
         val recovery = AutosaveRecoverySequence(
             candidates = candidates,
             open = { file, finished ->
-                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true) { r ->
+                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true,
+                    shouldExecute = { autosaveRecovery?.isActive() == true }) { r ->
                     finished(r != null)
                 }
             },
@@ -132,7 +133,8 @@ class MainActivity : ComponentActivity(), FileOps {
             if (err != null) { Cad.message = err; return@onEngine }
             val cmd = if (!insert) "doc.open" else if (ext in setOf("step", "stp", "igs", "iges", "fcstd", "3dm")) "file.insert_step" else "file.insert_mesh"
             Cad.form = null; Cad.selection.clear()
-            Cad.exec(cmd, JSONObject().put("path", f.absolutePath)) { r ->
+            Cad.exec(cmd, JSONObject().put("path", f.absolutePath),
+                shouldExecute = { insert || manualOpenGate.isPending(openRequest!!) }) { r ->
                 if (r != null) {
                     if (!insert) {
                         if (!manualOpenGate.succeeded(openRequest!!)) return@exec
