@@ -126,18 +126,21 @@ internal class AutosaveRecoverySequence(
 
 /** A failed user document open must never turn unknown native state into a new autosave. */
 internal class ManualOpenAutosaveGate {
-    private var safe = true
+    // Native admission and completion can run on different threads. Keep the save
+    // eligibility flag visible to the autosave caller and serialize transitions so
+    // a stale success cannot race a newer begin() into re-enabling autosave.
+    @Volatile private var safe = true
     @Volatile private var generation = 0L
     @Volatile private var awaitingSuccess = false
 
-    fun begin(): Long {
+    @Synchronized fun begin(): Long {
         safe = false
         awaitingSuccess = true
         return ++generation
     }
 
     /** Accept each matching native open completion once, never a duplicate or stale callback. */
-    fun succeeded(request: Long): Boolean {
+    @Synchronized fun succeeded(request: Long): Boolean {
         if (request != generation || !awaitingSuccess) return false
         awaitingSuccess = false
         safe = true
