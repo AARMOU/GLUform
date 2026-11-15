@@ -84,7 +84,8 @@ internal class AutosaveRecoverySequence(
     private val onUnavailable: () -> Unit
 ) {
     private var index = 0
-    private var active = true
+    @Volatile private var active = true
+    fun isActive(): Boolean = active
     private var started = false
 
     fun start() {
@@ -126,8 +127,8 @@ internal class AutosaveRecoverySequence(
 /** A failed user document open must never turn unknown native state into a new autosave. */
 internal class ManualOpenAutosaveGate {
     private var safe = true
-    private var generation = 0L
-    private var awaitingSuccess = false
+    @Volatile private var generation = 0L
+    @Volatile private var awaitingSuccess = false
 
     fun begin(): Long {
         safe = false
