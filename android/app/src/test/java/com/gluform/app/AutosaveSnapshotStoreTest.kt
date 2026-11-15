@@ -626,4 +626,24 @@ class AutosaveSnapshotStoreTest {
         assertTrue(nativeCalls.isEmpty())
     }
 
+    @Test fun supersededOpenAfterNativeExecutionCannotPublishStaleUiSnapshot() {
+        val gate = ManualOpenAutosaveGate()
+        val callbacks = mutableListOf<() -> Unit>()
+        val published = mutableListOf<String>()
+        val first = gate.begin()
+        // The native command has already finished; its UI callback is still queued.
+        val nativeSnapshot = "first-document"
+        callbacks += {
+            // Match Cad.exec's main-thread admission check before apply(snapshot).
+            if (gate.isPending(first)) {
+                published += nativeSnapshot
+                gate.succeeded(first)
+            }
+        }
+        gate.begin() // Newer manual open supersedes the finished native command.
+        callbacks.single().invoke()
+        assertTrue("stale native snapshot must never reach the UI", published.isEmpty())
+        assertFalse("stale success must not enable autosave", gate.mayAutosave())
+    }
+
 }
