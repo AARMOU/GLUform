@@ -221,14 +221,18 @@ object Diagnostics {
         }
 
         input.buffered(65536).use { source ->
+            val chunk = ByteArray(65536)
             while (true) {
-                val next = source.read()
-                if (next == -1) break
-                if (next == 10) {
-                    emit()
-                } else if (!oversized) {
-                    if (line.size() < maxLineBytes) line.write(next)
-                    else oversized = true
+                val count = source.read(chunk)
+                if (count == -1) break
+                for (index in 0 until count) {
+                    val next = chunk[index].toInt() and 0xff
+                    if (next == 10) {
+                        emit()
+                    } else if (!oversized) {
+                        if (line.size() < maxLineBytes) line.write(next)
+                        else oversized = true
+                    }
                 }
             }
             if (oversized || line.size() > 0) emit()
