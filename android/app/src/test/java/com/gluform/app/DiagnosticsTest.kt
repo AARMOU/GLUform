@@ -123,4 +123,31 @@ class DiagnosticsTest {
         assertFalse(output.toString("UTF-8").contains("secret.sc"))
     }
 
+
+    @Test fun historicalExportStreamsChunksAcrossRecordBoundaries() {
+        val first = JSONObject().put("event", "sketch.visibility")
+            .put("message", "secret /private/draft.sc")
+            .put("params", JSONObject().put("width", 12)).toString()
+        val second = JSONObject().put("event", "session.start").toString()
+        val inputBytes = (first + "\n" + second).toByteArray(Charsets.UTF_8)
+        val input = object : java.io.ByteArrayInputStream(inputBytes) {
+            var bulkReads = 0
+            override fun read(): Int = error("Historical export must use bulk reads")
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                bulkReads++
+                return super.read(buffer, offset, minOf(length, 7))
+            }
+        }
+        val output = java.io.ByteArrayOutputStream()
+        val bytes = Diagnostics.copySanitizedHistory(input, output)
+        val result = output.toString("UTF-8")
+        val records = result.trim().lines().map { JSONObject(it) }
+        assertEquals(2, records.size)
+        assertEquals("sketch.visibility", records[0].getString("event"))
+        assertEquals(12, records[0].getJSONObject("params").getInt("width"))
+        assertEquals("session.start", records[1].getString("event"))
+        assertFalse(result.contains("draft.sc"))
+        assertEquals(result.toByteArray(Charsets.UTF_8).size.toLong(), bytes)
+        assertTrue(input.bulkReads > 1)
+    }
 }
