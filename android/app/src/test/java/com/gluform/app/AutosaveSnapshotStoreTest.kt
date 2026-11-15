@@ -681,4 +681,42 @@ class AutosaveSnapshotStoreTest {
             engine.shutdownNow()
         }
     }
+
+    @Test fun inFlightSupersededNativeOpenCannotAuthorizeAutosaveAfterNewerOpenFails() {
+        // Deterministic native-mutation model, NOT a JNI integration test: cancellation
+        // cannot interrupt a command that has already passed the engine admission check.
+        val enteredNative = java.util.concurrent.CountDownLatch(1)
+        val releaseNative = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val gate = ManualOpenAutosaveGate()
+            val nativeDocument = java.util.concurrent.atomic.AtomicReference("original")
+            val callbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val oldRequest = gate.begin()
+            val oldOpen = engine.submit {
+                check(gate.isPending(oldRequest))
+                enteredNative.countDown()
+                check(releaseNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                nativeDocument.set("superseded-document")
+                callbacks.put { assertFalse(gate.succeeded(oldRequest)) }
+            }
+            assertTrue(enteredNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            gate.begin() // User selects a newer document while the old JNI call is running.
+            assertFalse(gate.mayAutosave())
+            releaseNative.countDown()
+            oldOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            // Newer native open fails; the stale successful native mutation remains possible.
+            callbacks.take().invoke()
+            assertEquals("superseded-document", nativeDocument.get())
+            assertFalse("unknown native identity must inhibit autosave", gate.mayAutosave())
+            val retry = gate.begin()
+            nativeDocument.set("intended-document")
+            assertTrue(gate.succeeded(retry))
+            assertEquals("intended-document", nativeDocument.get())
+            assertTrue(gate.mayAutosave())
+        } finally {
+            releaseNative.countDown()
+            engine.shutdownNow()
+        }
+    }
 }
