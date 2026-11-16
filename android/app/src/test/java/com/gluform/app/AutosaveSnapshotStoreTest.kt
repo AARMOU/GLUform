@@ -719,4 +719,34 @@ class AutosaveSnapshotStoreTest {
             engine.shutdownNow()
         }
     }
+    @Test fun concurrentManualOpenSupersessionRejectsLateNativeSuccessAcrossThreads() {
+        // The JNI completion thread must observe the newer UI-thread request generation,
+        // even when the old completion was already prepared before supersession.
+        val gate = ManualOpenAutosaveGate()
+        val completionReady = java.util.concurrent.CountDownLatch(1)
+        val allowCompletion = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val oldRequest = gate.begin()
+            val staleCompletion = executor.submit<Boolean> {
+                completionReady.countDown()
+                check(allowCompletion.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                gate.succeeded(oldRequest)
+            }
+            assertTrue(completionReady.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerRequest = gate.begin()
+            assertFalse(gate.isPending(oldRequest))
+            assertTrue(gate.isPending(newerRequest))
+            allowCompletion.countDown()
+            assertFalse(staleCompletion.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("newer failed open must leave autosave inhibited", gate.mayAutosave())
+            assertTrue(gate.isPending(newerRequest))
+            assertTrue(gate.succeeded(newerRequest))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            allowCompletion.countDown()
+            executor.shutdownNow()
+        }
+    }
+
 }
