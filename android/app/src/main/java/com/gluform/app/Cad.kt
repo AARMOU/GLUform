@@ -155,16 +155,24 @@ object Cad : ViewportHost {
     }
 
     /** Run a command, then refresh everything the UI shows. `then` gets the result, or null when it failed. */
-    fun exec(cmd: String, params: JSONObject = JSONObject(), quiet: Boolean = false, then: (JSONObject?) -> Unit = {}) {
+    fun exec(cmd: String, params: JSONObject = JSONObject(), quiet: Boolean = false, shouldExecute: () -> Boolean = { true }, then: (JSONObject?) -> Unit = {}) {
         val begun = System.nanoTime()
         Diagnostics.event("engine.command.begin", "name=" + cmd + " quiet=" + quiet + " params=" + Diagnostics.safeParams(params))
         busy++
         engine.execute {
+            // A cancelled document open must not reach JNI or publish an obsolete snapshot.
+            if (!shouldExecute()) {
+                main.post { busy-- }
+                return@execute
+            }
             val r = runCatching { JSONObject(Native.execute(cmd, params.toString())) }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "failed") }
             Diagnostics.event("engine.command.nativeResult", "name=" + cmd + " success=" + r.optBoolean("ok") + " error=" + (if (r.optBoolean("ok")) "" else r.optString("error")) + " durationMs=" + ((System.nanoTime() - begun) / 1000000.0))
             val snap = snapshot()
             main.post {
                 busy--
+                // A newer open may supersede this command after JNI finishes but before
+                // the main-thread callback runs. Never publish its obsolete UI snapshot.
+                if (!shouldExecute()) return@post
                 apply(snap)
                 Diagnostics.event("engine.command.applied", "name=" + cmd + " success=" + r.optBoolean("ok") + " totalMs=" + ((System.nanoTime() - begun) / 1000000.0) + " pending=" + busy)
                 if (r.optBoolean("ok")) {

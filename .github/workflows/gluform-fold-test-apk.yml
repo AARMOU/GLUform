@@ -6,6 +6,7 @@ on:
       - gluese/fold-rotation-viewport-20261111
       - gluese/touch-ui-overhaul-20261111
       - glu/integration-p0-unified-20261113
+      - glu/qa-p0-consolidated-20261116
     paths:
       - 'android/**'
       - 'rust/**'
@@ -85,7 +86,7 @@ jobs:
       - name: Upload unified P0 QA APK
         uses: actions/upload-artifact@v4
         with:
-          name: GLUform-0.1.0-P0-unified-arm64
+          name: GLUform-0.1.0-P0-consolidated-arm64
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7

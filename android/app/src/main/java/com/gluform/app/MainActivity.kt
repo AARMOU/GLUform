@@ -49,7 +49,8 @@ class MainActivity : ComponentActivity(), FileOps {
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
 
-    private var autosaveRecovery: AutosaveRecoverySequence? = null
+    // Read by Cad's engine executor when deciding whether a queued recovery open is still valid.
+    @Volatile private var autosaveRecovery: AutosaveRecoverySequence? = null
     private val manualOpenGate = ManualOpenAutosaveGate()
 
     /** Try only app-managed snapshots, one native open at a time; never delete failed candidates. */
@@ -64,7 +65,8 @@ class MainActivity : ComponentActivity(), FileOps {
             candidates = candidates,
             open = { file, finished ->
                 Diagnostics.event("autosave.recovery.attempt", "fileBytes=" + file.length())
-                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true) { r ->
+                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true,
+                    shouldExecute = { autosaveRecovery?.isActive() == true }) { r ->
                     Diagnostics.event("autosave.recovery.result", "success=" + (r != null) + " fileBytes=" + file.length())
                     finished(r != null)
                 }
@@ -84,7 +86,8 @@ class MainActivity : ComponentActivity(), FileOps {
             onUnavailable = {
                 Diagnostics.event("autosave.recovery.failed", "no native-openable snapshots")
                 autosaveRecovery = null
-                // Native recovery exhausted: block background saves until a valid manual open.
+                // All native recovery opens failed: the engine document state is unknown.
+                // Do not overwrite preserved snapshots when the activity backgrounds.
                 manualOpenGate.begin()
                 Cad.message = "Autosave recovery failed; original snapshots were preserved"
             }
@@ -152,7 +155,8 @@ class MainActivity : ComponentActivity(), FileOps {
             if (err != null) { Cad.message = err; return@onEngine }
             val cmd = if (!insert) "doc.open" else if (ext in setOf("step", "stp", "igs", "iges", "fcstd", "3dm")) "file.insert_step" else "file.insert_mesh"
             Cad.form = null; Cad.selection.clear()
-            Cad.exec(cmd, JSONObject().put("path", f.absolutePath)) { r ->
+            Cad.exec(cmd, JSONObject().put("path", f.absolutePath),
+                shouldExecute = { insert || manualOpenGate.isPending(openRequest!!) }) { r ->
                 if (r != null) {
                     if (!insert) {
                         if (!manualOpenGate.succeeded(openRequest!!)) return@exec
