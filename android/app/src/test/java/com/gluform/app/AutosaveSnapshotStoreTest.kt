@@ -749,4 +749,41 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun simultaneousRecoveryCompletionsAdvanceOnlyOnce() {
+        val first = tmp.newFile("parallel-recovery-first.sc")
+        val second = tmp.newFile("parallel-recovery-second.sc")
+        val callbacks = mutableListOf<(Boolean) -> Unit>()
+        var recovered = 0
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, second),
+            { _, completion -> callbacks.add(completion) },
+            { recovered++ },
+            { unavailable++ }
+        )
+        sequence.start()
+        val completion = callbacks.single()
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                executor.submit {
+                    ready.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    completion(false)
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            results.forEach { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals("Only one fallback open may be scheduled", 2, callbacks.size)
+            assertEquals(0, recovered)
+            assertEquals(0, unavailable)
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
 }
