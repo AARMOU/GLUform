@@ -69,9 +69,9 @@ internal class AutosaveSnapshotStore(
 
 /** Ignore stale save callbacks if backgrounding scheduled a newer snapshot. */
 internal class AutosaveGeneration {
-    private var serial = 0L
-    fun next(): Long = ++serial
-    fun isLatest(value: Long): Boolean = value == serial
+    private val serial = java.util.concurrent.atomic.AtomicLong(0L)
+    fun next(): Long = serial.incrementAndGet()
+    fun isLatest(value: Long): Boolean = value == serial.get()
 }
 
 /** Callback-driven cold-start recovery; attempts are sequential and stale callbacks are ignored.
