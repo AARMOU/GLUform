@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
@@ -188,6 +189,53 @@ object Diagnostics {
         if (initialized) io.execute { runCatching { writer?.flush() } }
     }
 
+    /**
+     * Historical sessions may predate writer-side redaction. Export only sanitized JSON
+     * records, never raw bytes. Invalid or oversized records become fixed placeholders.
+     * The byte limit also bounds memory when an old session has no newlines.
+     */
+    internal fun sanitizedHistoricalRecord(raw: String): String =
+        try {
+            safeParams(JSONObject(raw))
+        } catch (_: Exception) {
+            JSONObject().put("event", "diagnostics.export.omitted_invalid_record").toString()
+        }
+
+    internal fun copySanitizedHistory(input: java.io.InputStream, out: java.io.OutputStream): Long {
+        val maxLineBytes = 65536
+        val line = ByteArrayOutputStream()
+        var oversized = false
+        var exported = 0L
+
+        fun emit() {
+            val record = if (oversized) {
+                JSONObject().put("event", "diagnostics.export.omitted_oversized_record").toString()
+            } else {
+                sanitizedHistoricalRecord(line.toString(StandardCharsets.UTF_8.name()))
+            }
+            val bytes = (record + "\n").toByteArray(StandardCharsets.UTF_8)
+            out.write(bytes)
+            exported += bytes.size.toLong()
+            line.reset()
+            oversized = false
+        }
+
+        input.buffered(65536).use { source ->
+            while (true) {
+                val next = source.read()
+                if (next == -1) break
+                if (next == 10) {
+                    emit()
+                } else if (!oversized) {
+                    if (line.size() < maxLineBytes) line.write(next)
+                    else oversized = true
+                }
+            }
+            if (oversized || line.size() > 0) emit()
+        }
+        return exported
+    }
+
     /** Serializes after prior events; exports existing logs plus the current session. */
     fun export(resolver: ContentResolver, uri: Uri, done: (Boolean, String) -> Unit) {
         event("diagnostics.export.request", "user selected a local destination")
@@ -203,7 +251,7 @@ object Diagnostics {
                 stream.use { out ->
                     for (file in files) {
                         out.write(("\n=== GLUform session " + file.name + " ===\n").toByteArray(StandardCharsets.UTF_8))
-                        file.inputStream().buffered().use { input -> bytes += input.copyTo(out, 65536) }
+                        file.inputStream().use { input -> bytes += copySanitizedHistory(input, out) }
                     }
                 }
                 "Exported " + files.size + " session(s), " + bytes + " diagnostic bytes" +
