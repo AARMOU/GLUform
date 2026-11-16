@@ -749,6 +749,32 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun concurrentSnapshotGenerationProducesUniqueTokensAndRejectsOldCompletions() {
+        val generations = AutosaveGeneration()
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val ready = java.util.concurrent.CountDownLatch(4)
+        val start = java.util.concurrent.CountDownLatch(1)
+        try {
+            val tasks = (1..4).map {
+                workers.submit<List<Long>> {
+                    ready.countDown()
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    (1..250).map { generations.next() }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            start.countDown()
+            val tokens = tasks.flatMap { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(1000, tokens.distinct().size)
+            assertEquals((1L..1000L).toList(), tokens.sorted())
+            assertFalse(generations.isLatest(999L))
+            assertTrue(generations.isLatest(1000L))
+        } finally {
+            start.countDown()
+            workers.shutdownNow()
+        }
+    }
+
     @Test fun simultaneousRecoveryCompletionsAdvanceOnlyOnce() {
         val first = tmp.newFile("parallel-recovery-first.sc")
         val second = tmp.newFile("parallel-recovery-second.sc")
