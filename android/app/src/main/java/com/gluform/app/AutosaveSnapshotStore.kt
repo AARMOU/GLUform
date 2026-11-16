@@ -148,7 +148,9 @@ internal class ManualOpenAutosaveGate {
     }
 
     /** A superseded request must not enqueue another native doc.open after file preparation. */
-    fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
+    // Read generation and pending state atomically with begin()/succeeded().
+    // Separate volatile reads could otherwise observe a mixed request transition.
+    @Synchronized fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
 
     fun mayAutosave(): Boolean = safe
 }
