@@ -812,4 +812,38 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun concurrentRecoveryStartSubmitsOnlyOneNativeOpen() {
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        val sequence = AutosaveRecoverySequence(
+            listOf(File("autosave-one.sc")),
+            open = { _, _ -> opens.incrementAndGet() },
+            onRecovered = { fail("No completion delivered") },
+            onUnavailable = { fail("Candidate exists") }
+        )
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val go = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                pool.submit<Boolean> {
+                    ready.countDown()
+                    check(go.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    try {
+                        sequence.start()
+                        true
+                    } catch (_: IllegalStateException) {
+                        false
+                    }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            go.countDown()
+            assertEquals(1, results.count { it.get(5, java.util.concurrent.TimeUnit.SECONDS) })
+            assertEquals("Concurrent lifecycle starts must not enqueue duplicate doc.open", 1, opens.get())
+        } finally {
+            go.countDown()
+            pool.shutdownNow()
+        }
+    }
+
 }
