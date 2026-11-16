@@ -52,7 +52,8 @@ internal class AutosaveSnapshotStore(
             candidate.target.delete()
             return false
         }
-        // Preference storage may throw; keep the previous committed pointer intact.
+        // A preference backend can throw on storage failure. Preserve the previous
+        // committed recovery pointer and clean up this uncommitted candidate.
         val committed = runCatching { setCommittedPath(candidate.target.absolutePath) }
             .getOrDefault(false)
         if (!committed) {
@@ -68,9 +69,9 @@ internal class AutosaveSnapshotStore(
 
 /** Ignore stale save callbacks if backgrounding scheduled a newer snapshot. */
 internal class AutosaveGeneration {
-    private var serial = 0L
-    fun next(): Long = ++serial
-    fun isLatest(value: Long): Boolean = value == serial
+    private val serial = java.util.concurrent.atomic.AtomicLong(0L)
+    fun next(): Long = serial.incrementAndGet()
+    fun isLatest(value: Long): Boolean = value == serial.get()
 }
 
 /** Callback-driven cold-start recovery; attempts are sequential and stale callbacks are ignored.
@@ -83,16 +84,17 @@ internal class AutosaveRecoverySequence(
     private val onUnavailable: () -> Unit
 ) {
     private var index = 0
-    private var active = true
+    @Volatile private var active = true
+    fun isActive(): Boolean = active
     private var started = false
 
-    fun start() {
+    @Synchronized fun start() {
         check(!started) { "Recovery can be started only once" }
         started = true
         attemptNext()
     }
 
-    fun cancel() { active = false }
+    @Synchronized fun cancel() { active = false }
 
     private fun attemptNext() {
         if (!active) return
@@ -104,8 +106,13 @@ internal class AutosaveRecoverySequence(
         var completed = false
         val finish: (Boolean) -> Unit = { success ->
             // Ignore duplicated or late completions after cancellation/user document open.
-            if (active && !completed) {
-                completed = true
+            val accepted = synchronized(this) {
+                if (!active || completed) false else {
+                    completed = true
+                    true
+                }
+            }
+            if (accepted) {
                 if (success) {
                     active = false
                     onRecovered(file)
@@ -124,18 +131,21 @@ internal class AutosaveRecoverySequence(
 
 /** A failed user document open must never turn unknown native state into a new autosave. */
 internal class ManualOpenAutosaveGate {
-    private var safe = true
-    private var generation = 0L
-    private var awaitingSuccess = false
+    // Native admission and completion can run on different threads. Keep the save
+    // eligibility flag visible to the autosave caller and serialize transitions so
+    // a stale success cannot race a newer begin() into re-enabling autosave.
+    @Volatile private var safe = true
+    @Volatile private var generation = 0L
+    @Volatile private var awaitingSuccess = false
 
-    fun begin(): Long {
+    @Synchronized fun begin(): Long {
         safe = false
         awaitingSuccess = true
         return ++generation
     }
 
     /** Accept each matching native open completion once, never a duplicate or stale callback. */
-    fun succeeded(request: Long): Boolean {
+    @Synchronized fun succeeded(request: Long): Boolean {
         if (request != generation || !awaitingSuccess) return false
         awaitingSuccess = false
         safe = true
@@ -143,7 +153,9 @@ internal class ManualOpenAutosaveGate {
     }
 
     /** A superseded request must not enqueue another native doc.open after file preparation. */
-    fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
+    // Read generation and pending state atomically with begin()/succeeded().
+    // Separate volatile reads could otherwise observe a mixed request transition.
+    @Synchronized fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
 
     fun mayAutosave(): Boolean = safe
 }

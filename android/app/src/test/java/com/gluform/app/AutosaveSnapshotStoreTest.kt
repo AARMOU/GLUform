@@ -550,6 +550,7 @@ class AutosaveSnapshotStoreTest {
         assertEquals(listOf(first, backup), attempts)
         assertEquals(0, unavailable)
     }
+
     @Test fun throwingPreferenceCommitPreservesLastValidSnapshot() {
         val dir = tmp.newFolder("commit-throws")
         val prior = File(dir, "autosave-prior.sc").apply { writeText("known-good") }
@@ -579,20 +580,270 @@ class AutosaveSnapshotStoreTest {
 
     @Test fun exhaustedRecoveryInhibitsAutosaveUntilNewValidManualOpen() {
         val gate = ManualOpenAutosaveGate()
-        val attempts = mutableListOf<String>()
-        AutosaveRecoverySequence(
+        val attempted = mutableListOf<String>()
+        val recovery = AutosaveRecoverySequence(
             candidates = listOf(tmp.newFile("failed-recovery.sc")),
-            open = { file, done -> attempts.add(file.name); done(false) },
+            open = { file, done ->
+                attempted.add(file.name)
+                done(false)
+            },
             onRecovered = { fail("failed recovery cannot report success") },
             onUnavailable = { gate.begin() }
-        ).start()
-        assertEquals(listOf("failed-recovery.sc"), attempts)
-        assertFalse(gate.mayAutosave())
+        )
+        recovery.start()
+        assertEquals(listOf("failed-recovery.sc"), attempted)
+        assertFalse("failed recovery must not overwrite preserved snapshots", gate.mayAutosave())
         val request = gate.begin()
         assertFalse(gate.succeeded(request - 1))
         assertFalse(gate.mayAutosave())
         assertTrue(gate.succeeded(request))
         assertTrue(gate.mayAutosave())
+    }
+
+    @Test fun supersededQueuedRecoveryOpenIsRejectedBeforeNativeExecution() {
+        val queued = mutableListOf<() -> Unit>()
+        val nativeCalls = mutableListOf<String>()
+        val admitted = java.util.concurrent.atomic.AtomicBoolean(true)
+        val recovery = AutosaveRecoverySequence(
+            candidates = listOf(File("recovery.sc")),
+            open = { _, finished ->
+                // Mirror Cad.exec's engine-thread admission check, not its callback check.
+                queued += {
+                    if (admitted.get()) {
+                        nativeCalls += "doc.open"
+                        finished(true)
+                    }
+                }
+            },
+            onRecovered = { fail("Cancelled recovery must not report success") },
+            onUnavailable = { fail("Cancelled recovery must not exhaust") }
+        )
+        admitted.set(true)
+        recovery.start()
+        recovery.cancel()
+        admitted.set(recovery.isActive())
+        queued.single().invoke()
+        assertTrue(nativeCalls.isEmpty())
+    }
+
+    @Test fun supersededOpenAfterNativeExecutionCannotPublishStaleUiSnapshot() {
+        val gate = ManualOpenAutosaveGate()
+        val callbacks = mutableListOf<() -> Unit>()
+        val published = mutableListOf<String>()
+        val first = gate.begin()
+        // The native command has already finished; its UI callback is still queued.
+        val nativeSnapshot = "first-document"
+        callbacks += {
+            // Match Cad.exec's main-thread admission check before apply(snapshot).
+            if (gate.isPending(first)) {
+                published += nativeSnapshot
+                gate.succeeded(first)
+            }
+        }
+        gate.begin() // Newer manual open supersedes the finished native command.
+        callbacks.single().invoke()
+        assertTrue("stale native snapshot must never reach the UI", published.isEmpty())
+        assertFalse("stale success must not enable autosave", gate.mayAutosave())
+    }
+
+
+    @Test fun cancelledRecoveryIsInvisibleToQueuedEngineThreadBeforeNativeOpen() {
+        val queued = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val nativeCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            lateinit var recovery: AutosaveRecoverySequence
+            recovery = AutosaveRecoverySequence(
+                candidates = listOf(File("autosave-cancelled.sc")),
+                open = { _, done ->
+                    engine.execute {
+                        queued.countDown()
+                        check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        // Same cross-thread admission predicate used by MainActivity's Cad.exec.
+                        if (recovery.isActive()) {
+                            nativeCalls.incrementAndGet()
+                            done(true)
+                        }
+                    }
+                },
+                onRecovered = { fail("Cancelled recovery must not succeed") },
+                onUnavailable = { fail("Cancelled recovery must not report exhaustion") }
+            )
+            recovery.start()
+            assertTrue(queued.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            recovery.cancel() // UI thread cancels while the engine thread is blocked.
+            release.countDown()
+            engine.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(0, nativeCalls.get())
+        } finally {
+            release.countDown()
+            engine.shutdownNow()
+        }
+    }
+
+    @Test fun inFlightSupersededNativeOpenCannotAuthorizeAutosaveAfterNewerOpenFails() {
+        // Deterministic native-mutation model, NOT a JNI integration test: cancellation
+        // cannot interrupt a command that has already passed the engine admission check.
+        val enteredNative = java.util.concurrent.CountDownLatch(1)
+        val releaseNative = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val gate = ManualOpenAutosaveGate()
+            val nativeDocument = java.util.concurrent.atomic.AtomicReference("original")
+            val callbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val oldRequest = gate.begin()
+            val oldOpen = engine.submit {
+                check(gate.isPending(oldRequest))
+                enteredNative.countDown()
+                check(releaseNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                nativeDocument.set("superseded-document")
+                callbacks.put { assertFalse(gate.succeeded(oldRequest)) }
+            }
+            assertTrue(enteredNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            gate.begin() // User selects a newer document while the old JNI call is running.
+            assertFalse(gate.mayAutosave())
+            releaseNative.countDown()
+            oldOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            // Newer native open fails; the stale successful native mutation remains possible.
+            callbacks.take().invoke()
+            assertEquals("superseded-document", nativeDocument.get())
+            assertFalse("unknown native identity must inhibit autosave", gate.mayAutosave())
+            val retry = gate.begin()
+            nativeDocument.set("intended-document")
+            assertTrue(gate.succeeded(retry))
+            assertEquals("intended-document", nativeDocument.get())
+            assertTrue(gate.mayAutosave())
+        } finally {
+            releaseNative.countDown()
+            engine.shutdownNow()
+        }
+    }
+    @Test fun concurrentManualOpenSupersessionRejectsLateNativeSuccessAcrossThreads() {
+        // The JNI completion thread must observe the newer UI-thread request generation,
+        // even when the old completion was already prepared before supersession.
+        val gate = ManualOpenAutosaveGate()
+        val completionReady = java.util.concurrent.CountDownLatch(1)
+        val allowCompletion = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val oldRequest = gate.begin()
+            val staleCompletion = executor.submit<Boolean> {
+                completionReady.countDown()
+                check(allowCompletion.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                gate.succeeded(oldRequest)
+            }
+            assertTrue(completionReady.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerRequest = gate.begin()
+            assertFalse(gate.isPending(oldRequest))
+            assertTrue(gate.isPending(newerRequest))
+            allowCompletion.countDown()
+            assertFalse(staleCompletion.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("newer failed open must leave autosave inhibited", gate.mayAutosave())
+            assertTrue(gate.isPending(newerRequest))
+            assertTrue(gate.succeeded(newerRequest))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            allowCompletion.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun concurrentSnapshotGenerationProducesUniqueTokensAndRejectsOldCompletions() {
+        val generations = AutosaveGeneration()
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val ready = java.util.concurrent.CountDownLatch(4)
+        val start = java.util.concurrent.CountDownLatch(1)
+        try {
+            val tasks = (1..4).map {
+                workers.submit<List<Long>> {
+                    ready.countDown()
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    (1..250).map { generations.next() }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            start.countDown()
+            val tokens = tasks.flatMap { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(1000, tokens.distinct().size)
+            assertEquals((1L..1000L).toList(), tokens.sorted())
+            assertFalse(generations.isLatest(999L))
+            assertTrue(generations.isLatest(1000L))
+        } finally {
+            start.countDown()
+            workers.shutdownNow()
+        }
+    }
+
+    @Test fun simultaneousRecoveryCompletionsAdvanceOnlyOnce() {
+        val first = tmp.newFile("parallel-recovery-first.sc")
+        val second = tmp.newFile("parallel-recovery-second.sc")
+        val callbacks = mutableListOf<(Boolean) -> Unit>()
+        var recovered = 0
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, second),
+            { _, completion -> callbacks.add(completion) },
+            { recovered++ },
+            { unavailable++ }
+        )
+        sequence.start()
+        val completion = callbacks.single()
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                executor.submit {
+                    ready.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    completion(false)
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            results.forEach { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals("Only one fallback open may be scheduled", 2, callbacks.size)
+            assertEquals(0, recovered)
+            assertEquals(0, unavailable)
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun concurrentRecoveryStartSubmitsOnlyOneNativeOpen() {
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        val sequence = AutosaveRecoverySequence(
+            listOf(File("autosave-one.sc")),
+            open = { _, _ -> opens.incrementAndGet() },
+            onRecovered = { fail("No completion delivered") },
+            onUnavailable = { fail("Candidate exists") }
+        )
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val go = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                pool.submit<Boolean> {
+                    ready.countDown()
+                    check(go.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    try {
+                        sequence.start()
+                        true
+                    } catch (_: IllegalStateException) {
+                        false
+                    }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            go.countDown()
+            assertEquals(1, results.count { it.get(5, java.util.concurrent.TimeUnit.SECONDS) })
+            assertEquals("Concurrent lifecycle starts must not enqueue duplicate doc.open", 1, opens.get())
+        } finally {
+            go.countDown()
+            pool.shutdownNow()
+        }
     }
 
 }
