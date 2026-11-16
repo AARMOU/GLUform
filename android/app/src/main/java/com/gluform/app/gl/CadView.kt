@@ -5,6 +5,7 @@ import android.content.Context
 import android.opengl.GLSurfaceView
 import android.view.MotionEvent
 import android.view.ViewConfiguration
+import com.gluform.app.Diagnostics
 import kotlin.math.hypot
 
 interface ViewportHost {
@@ -36,6 +37,7 @@ class CadView(ctx: Context, val renderer: Renderer, private val host: ViewportHo
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        Diagnostics.event("input.touch", "action=" + MotionEvent.actionToString(e.actionMasked) + " pointers=" + e.pointerCount + " xy=" + e.x + "," + e.y + " view=" + width + "x" + height + " mode=" + mode + " moved=" + moved + " toolDrag=" + toolDrag + " eventMs=" + e.eventTime)
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 mode = 1; sx = e.x; sy = e.y; lx = sx; ly = sy; moved = false; toolDrag = false; downAt = e.eventTime
@@ -84,6 +86,7 @@ class CadView(ctx: Context, val renderer: Renderer, private val host: ViewportHo
     }
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        Diagnostics.event("input.generic", "action=" + MotionEvent.actionToString(e.actionMasked) + " xy=" + e.x + "," + e.y)
         if (e.actionMasked == MotionEvent.ACTION_SCROLL) {
             val v = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
             host.camera = host.camera.zoom(if (v > 0) 1.15f else 1 / 1.15f, e.x, e.y, width, height)

@@ -3,6 +3,7 @@ package com.gluform.app
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.content.res.Configuration
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,38 +20,109 @@ class MainActivity : ComponentActivity(), FileOps {
 
     private val opener = registerForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) pending?.invoke(u); pending = null }
     private val creator = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { u -> if (u != null) pending?.invoke(u); pending = null }
+    private val diagnosticsExporter = registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) Diagnostics.export(contentResolver, uri) { _, message -> Cad.message = message }
+    }
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Diagnostics.init(this)
+        Diagnostics.event("activity.create", "savedState=" + (b != null) + " initial=" + !started + " display=" + resources.displayMetrics.widthPixels + "x" + resources.displayMetrics.heightPixels)
         if (b == null && !started) {
             started = true
             Cad.start()
             val incoming = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.data
             if (incoming != null) openUri(incoming, insert = false)
-            else prefs.getString("autosave", null)?.let(::File)?.takeIf { it.length() > 0 }?.let { auto ->
-                Cad.exec("doc.open", JSONObject().put("path", auto.absolutePath), quiet = true) { r ->
-                    if (r != null) { Cad.fit(); saveUri = prefs.getString("saveUri", null)?.let(Uri::parse) }
-                }
-            }
+            else restoreAutosave()
         }
         setContent { App(this) }
     }
 
+    override fun onResume() { super.onResume(); Diagnostics.event("activity.resume", "ui resumed") }
+    override fun onPause() { Diagnostics.event("activity.pause", "ui backgrounded"); Diagnostics.flush(); super.onPause() }
+    override fun onDestroy() { Diagnostics.event("activity.destroy", "finishing=" + isFinishing); Diagnostics.flush(); super.onDestroy() }
+    override fun onConfigurationChanged(newConfig: Configuration) { super.onConfigurationChanged(newConfig); Diagnostics.event("activity.configuration", "orientation=" + newConfig.orientation + " size=" + resources.displayMetrics.widthPixels + "x" + resources.displayMetrics.heightPixels) }
+
     override fun onNewIntent(intent: Intent) {
+        Diagnostics.event("activity.newIntent", "action=" + intent.action)
         super.onNewIntent(intent)
         if (intent.action == Intent.ACTION_VIEW) intent.data?.let { openUri(it, insert = false) }
     }
 
+    private var autosaveRecovery: AutosaveRecoverySequence? = null
+    private val manualOpenGate = ManualOpenAutosaveGate()
+
+    /** Try only app-managed snapshots, one native open at a time; never delete failed candidates. */
+    private fun restoreAutosave() {
+        val store = AutosaveSnapshotStore(File(filesDir, "autosave")) { path ->
+            prefs.edit().putString("autosave", path).commit()
+        }
+        val candidates = store.recoveryCandidates(prefs.getString("autosave", null))
+        Diagnostics.event("autosave.recovery.candidates", "count=" + candidates.size + " sizes=" + candidates.map { it.length() })
+        if (candidates.isEmpty()) return
+        val recovery = AutosaveRecoverySequence(
+            candidates = candidates,
+            open = { file, finished ->
+                Diagnostics.event("autosave.recovery.attempt", "fileBytes=" + file.length())
+                Cad.exec("doc.open", JSONObject().put("path", file.absolutePath), quiet = true) { r ->
+                    Diagnostics.event("autosave.recovery.result", "success=" + (r != null) + " fileBytes=" + file.length())
+                    finished(r != null)
+                }
+            },
+            onRecovered = { file ->
+                Diagnostics.event("autosave.recovery.succeeded", "fileBytes=" + file.length())
+                autosaveRecovery = null
+                Cad.fit()
+                saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
+                // A successful native reopen, not merely nonzero bytes, selects the backup.
+                if (prefs.getString("autosave", null) != file.absolutePath &&
+                    !prefs.edit().putString("autosave", file.absolutePath).commit()
+                ) {
+                    Cad.message = "Previous design recovered, but its recovery pointer was not saved"
+                }
+            },
+            onUnavailable = {
+                Diagnostics.event("autosave.recovery.failed", "no native-openable snapshots")
+                autosaveRecovery = null
+                // Native recovery exhausted: block background saves until a valid manual open.
+                manualOpenGate.begin()
+                Cad.message = "Autosave recovery failed; original snapshots were preserved"
+            }
+        )
+        autosaveRecovery = recovery
+        recovery.start()
+    }
+
+    private val autosaveGeneration = AutosaveGeneration()
+
     override fun onStop() {
         super.onStop()
-        // keep the session: Android may end the app while it is in the background
-        val dir = File(filesDir, "autosave").apply { mkdirs() }
-        dir.listFiles()?.forEach { it.delete() }
-        if ((Cad.doc.optJSONArray("timeline")?.length() ?: 0) > 0) {
-            val f = File(dir, base() + ".sc")
-            prefs.edit().putString("autosave", f.absolutePath).apply()
-            Cad.exec("file.save_as", JSONObject().put("path", f.absolutePath).put("overwrite", true), quiet = true)
-        } else prefs.edit().remove("autosave").apply()
+        Diagnostics.event("activity.stop", "autosaveRecovery=" + (autosaveRecovery != null) + " timeline=" + (Cad.doc.optJSONArray("timeline")?.length() ?: -1))
+        Diagnostics.flush()
+        // Never autosave a partly restored/failed document over its recovery history.
+        if (autosaveRecovery != null || !manualOpenGate.mayAutosave()) return
+        // Do not erase an existing recovery snapshot if the engine has not finished loading.
+        // A valid, empty timeline is still a document worth saving.
+        if (Cad.doc.optJSONArray("timeline") == null) return
+        val store = AutosaveSnapshotStore(File(filesDir, "autosave")) { path ->
+            // commit() reports whether the new recovery pointer was actually persisted.
+            prefs.edit().putString("autosave", path).commit()
+        }
+        val candidate = runCatching { store.stage(prefs.getString("autosave", null)) }.getOrElse {
+            Cad.message = "Autosave unavailable: ${it.message ?: "cannot prepare file"}"
+            return
+        }
+        val request = autosaveGeneration.next()
+        Diagnostics.event("autosave.stage", "generation=" + request + " previousPresent=" + (candidate.previous?.isFile == true))
+        Cad.exec("file.save_as", JSONObject().put("path", candidate.target.absolutePath).put("overwrite", true), quiet = true) { result ->
+            Diagnostics.event("autosave.callback", "generation=" + request + " success=" + (result != null) + " size=" + candidate.target.length() + " isLatest=" + autosaveGeneration.isLatest(request))
+            if (!autosaveGeneration.isLatest(request)) {
+                candidate.target.delete() // superseded by a more recent snapshot
+                return@exec
+            }
+            val saved = runCatching { store.finish(candidate, result != null) }.getOrDefault(false)
+            if (!saved) Cad.message = "Autosave failed; your previous recovery snapshot was preserved"
+        }
     }
 
     private fun name(u: Uri): String {
@@ -60,17 +132,31 @@ class MainActivity : ComponentActivity(), FileOps {
     }
 
     private fun openUri(u: Uri, insert: Boolean) {
-        val n = name(u); val dir = File(cacheDir, "in").apply { mkdirs() }; val f = File(dir, n)
+        // A user-selected document takes precedence over pending background recovery callbacks.
+        val openRequest = if (!insert) manualOpenGate.begin() else null
+        if (!insert) {
+            // A failed manual open must not autosave an unknown native document state.
+            autosaveGeneration.next() // invalidate any pending background save completion
+            autosaveRecovery?.cancel()
+            autosaveRecovery = null
+        }
+        val n = name(u); val f = IncomingDocumentFile.allocate(File(cacheDir, "in"), n)
         val ext = n.substringAfterLast('.', "").lowercase()
         Cad.onEngine({
             contentResolver.openInputStream(u)?.use { i -> f.outputStream().use { o -> i.copyTo(o) } } ?: return@onEngine "Could not read $n"
             null
         }) { err ->
+            // Ignore both success and failure from superseded file preparations. An old
+            // read failure must not replace the current document's status or enqueue an open.
+            if (!insert && !manualOpenGate.isPending(openRequest!!)) return@onEngine
             if (err != null) { Cad.message = err; return@onEngine }
             val cmd = if (!insert) "doc.open" else if (ext in setOf("step", "stp", "igs", "iges", "fcstd", "3dm")) "file.insert_step" else "file.insert_mesh"
             Cad.form = null; Cad.selection.clear()
             Cad.exec(cmd, JSONObject().put("path", f.absolutePath)) { r ->
                 if (r != null) {
+                    if (!insert) {
+                        if (!manualOpenGate.succeeded(openRequest!!)) return@exec
+                    }
                     Cad.fit()
                     if (!insert) {
                         Cad.markSaved()
@@ -100,6 +186,10 @@ class MainActivity : ComponentActivity(), FileOps {
 
     override fun open() { pending = { openUri(it, insert = false) }; opener.launch(arrayOf("*/*")) }
     override fun insert() { pending = { openUri(it, insert = true) }; opener.launch(arrayOf("*/*")) }
+
+    override fun exportDiagnostics() {
+        diagnosticsExporter.launch("GLUform-diagnostics-" + System.currentTimeMillis() + ".txt")
+    }
 
     override fun save() {
         val u = saveUri
