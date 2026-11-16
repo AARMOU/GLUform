@@ -88,7 +88,7 @@ internal class AutosaveRecoverySequence(
     fun isActive(): Boolean = active
     private var started = false
 
-    fun start() {
+    @Synchronized fun start() {
         check(!started) { "Recovery can be started only once" }
         started = true
         attemptNext()
