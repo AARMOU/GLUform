@@ -94,7 +94,7 @@ internal class AutosaveRecoverySequence(
         attemptNext()
     }
 
-    fun cancel() { active = false }
+    @Synchronized fun cancel() { active = false }
 
     private fun attemptNext() {
         if (!active) return
@@ -106,8 +106,13 @@ internal class AutosaveRecoverySequence(
         var completed = false
         val finish: (Boolean) -> Unit = { success ->
             // Ignore duplicated or late completions after cancellation/user document open.
-            if (active && !completed) {
-                completed = true
+            val accepted = synchronized(this) {
+                if (!active || completed) false else {
+                    completed = true
+                    true
+                }
+            }
+            if (accepted) {
                 if (success) {
                     active = false
                     onRecovered(file)
