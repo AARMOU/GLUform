@@ -983,4 +983,26 @@ class AutosaveSnapshotStoreTest {
         assertEquals(listOf(previous), candidateStore.recoveryCandidates(previous.absolutePath))
     }
 
+    @Test fun acceptedRecoverySuccessIsTerminalBeforeConsumerCallback() {
+        val first = File("autosave-terminal.sc")
+        var completion: ((Boolean) -> Unit)? = null
+        lateinit var sequence: AutosaveRecoverySequence
+        var publications = 0
+        sequence = AutosaveRecoverySequence(
+            listOf(first),
+            open = { _, done -> completion = done },
+            onRecovered = {
+                assertFalse("Recovery must be inactive before external publication", sequence.isActive())
+                sequence.cancel() // Reentrant user action cannot reopen a completed recovery.
+                publications++
+            },
+            onUnavailable = { fail("Accepted recovery must not report exhaustion") }
+        )
+        sequence.start()
+        completion!!(true)
+        completion!!(true)
+        assertEquals(1, publications)
+        assertFalse(sequence.isActive())
+    }
+
 }
