@@ -88,9 +88,13 @@ internal class AutosaveRecoverySequence(
     fun isActive(): Boolean = active
     private var started = false
 
-    @Synchronized fun start() {
-        check(!started) { "Recovery can be started only once" }
-        started = true
+    fun start() {
+        synchronized(this) {
+            check(!started) { "Recovery can be started only once" }
+            started = true
+        }
+        // Native submission may block; do not hold the recovery monitor while calling it.
+        // Manual Open must be able to cancel recovery independently of that adapter.
         attemptNext()
     }
 
