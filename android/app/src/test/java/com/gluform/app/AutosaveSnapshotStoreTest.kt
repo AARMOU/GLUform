@@ -1029,4 +1029,43 @@ class AutosaveSnapshotStoreTest {
         assertFalse(sequence.isActive())
     }
 
+
+    @Test fun manualCancellationDoesNotWaitForBlockedNativeRecoverySubmission() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(File("autosave-blocked-native.sc")),
+            open = { _, done ->
+                entered.countDown()
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                done(true)
+            },
+            onRecovered = { fail("Cancelled recovery cannot publish a stale document") },
+            onUnavailable = { fail("Cancelled recovery cannot report exhaustion") }
+        )
+        try {
+            val start = executor.submit { sequence.start() }
+            assertTrue("Native submission never started", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // cancel() must not be serialized behind a blocking native adapter.
+            // Run cancellation on the test thread; release the adapter from a separate
+            // timed helper so a regression cannot hang the entire JVM indefinitely.
+            val unblock = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+            try {
+                unblock.schedule({ release.countDown() }, 2, java.util.concurrent.TimeUnit.SECONDS)
+                val before = System.nanoTime()
+                sequence.cancel()
+                val elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                assertTrue("Cancellation blocked on native submission: ${elapsedMs}ms", elapsedMs < 1500)
+                release.countDown()
+                start.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertFalse(sequence.isActive())
+            } finally {
+                unblock.shutdownNow()
+            }
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
 }
