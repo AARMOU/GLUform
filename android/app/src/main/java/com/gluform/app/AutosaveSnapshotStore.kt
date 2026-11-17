@@ -109,12 +109,14 @@ internal class AutosaveRecoverySequence(
             val accepted = synchronized(this) {
                 if (!active || completed) false else {
                     completed = true
+                    // Success owns terminal recovery before external publication.
+                    // Cancellation after acceptance cannot leave recovery active.
+                    if (success) active = false
                     true
                 }
             }
             if (accepted) {
                 if (success) {
-                    active = false
                     onRecovered(file)
                 } else attemptNext()
             }
