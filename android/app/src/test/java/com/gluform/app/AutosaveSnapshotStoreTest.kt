@@ -896,6 +896,26 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun cancellationBeforeRecoveryStartNeverSubmitsNativeOpen() {
+        val nativeOpens = java.util.concurrent.atomic.AtomicInteger()
+        val recovered = java.util.concurrent.atomic.AtomicInteger()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val recovery = AutosaveRecoverySequence(
+            listOf(File("autosave-cancelled-before-start.sc")),
+            open = { _, _ -> nativeOpens.incrementAndGet() },
+            onRecovered = { recovered.incrementAndGet() },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        // A manual document open can supersede a scheduled cold-start recovery
+        // before its lifecycle start callback has executed.
+        recovery.cancel()
+        recovery.start()
+        assertEquals(0, nativeOpens.get())
+        assertEquals(0, recovered.get())
+        assertEquals(0, unavailable.get())
+        assertFalse(recovery.isActive())
+    }
+
     @Test fun nativeSuccessThenSubmissionThrowDoesNotOpenFallback() {
         val first = File("autosave-success.sc")
         val backup = File("autosave-backup.sc")
