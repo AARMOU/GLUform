@@ -846,4 +846,53 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+
+    @Test fun racingSuccessAndFailureForSameRecoveryAttemptPublishOnlyOneOutcome() {
+        val first = File("autosave-racing-first.sc")
+        val backup = File("autosave-racing-backup.sc")
+        val callbacks = java.util.concurrent.CopyOnWriteArrayList<(Boolean) -> Unit>()
+        val opened = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val recovered = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, completion ->
+                opened.add(file)
+                callbacks.add(completion)
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        sequence.start()
+        val firstCompletion = callbacks.single()
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val jobs = listOf(true, false).map { success ->
+                pool.submit {
+                    ready.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    firstCompletion(success)
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            jobs.forEach { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(0, unavailable.get())
+            if (recovered.isNotEmpty()) {
+                assertEquals(listOf(first), recovered.toList())
+                assertEquals(listOf(first), opened.toList())
+            } else {
+                assertEquals(listOf(first, backup), opened.toList())
+                assertEquals(2, callbacks.size)
+                callbacks.last()(true)
+                assertEquals(listOf(backup), recovered.toList())
+            }
+            assertFalse(sequence.isActive())
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
 }
