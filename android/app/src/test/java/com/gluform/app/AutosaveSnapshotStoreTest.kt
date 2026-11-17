@@ -1005,4 +1005,28 @@ class AutosaveSnapshotStoreTest {
         assertFalse(sequence.isActive())
     }
 
+    @Test fun cancelledRecoverySubmissionExceptionCannotScheduleFallback() {
+        val first = File("autosave-cancelled-submission.sc")
+        val backup = File("autosave-backup.sc")
+        val attempts = mutableListOf<File>()
+        var recovered = 0
+        var unavailable = 0
+        lateinit var sequence: AutosaveRecoverySequence
+        sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, _ ->
+                attempts.add(file)
+                sequence.cancel() // Explicit manual Open supersedes the native submission.
+                throw IllegalStateException("native submission failed after cancellation")
+            },
+            onRecovered = { recovered++ },
+            onUnavailable = { unavailable++ }
+        )
+        sequence.start()
+        assertEquals(listOf(first), attempts)
+        assertEquals(0, recovered)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
 }
