@@ -895,4 +895,31 @@ class AutosaveSnapshotStoreTest {
             pool.shutdownNow()
         }
     }
+
+    @Test fun recoveredCallbackThrowCannotRetryNativeOpenOrReportUnavailable() {
+        val first = File("autosave-first.sc")
+        val backup = File("autosave-backup.sc")
+        val attempted = mutableListOf<File>()
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempted.add(file)
+                done(true)
+            },
+            onRecovered = { throw IllegalStateException("UI callback failed after native success") },
+            onUnavailable = { unavailable++ }
+        )
+        // Native submission wraps the callback; an exception from the consumer must
+        // not be interpreted as a failed native open and attempt another document.
+        try {
+            sequence.start()
+        } catch (_: IllegalStateException) {
+            // A synchronous callback is allowed to propagate to the caller.
+        }
+        assertEquals(listOf(first), attempted)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
 }
