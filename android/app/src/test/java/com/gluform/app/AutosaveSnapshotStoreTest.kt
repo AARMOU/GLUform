@@ -896,6 +896,31 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun nativeSuccessThenSubmissionThrowDoesNotOpenFallback() {
+        val first = File("autosave-success.sc")
+        val backup = File("autosave-backup.sc")
+        val attempted = mutableListOf<File>()
+        val recovered = mutableListOf<File>()
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempted.add(file)
+                done(true)
+                // A native adapter can throw after a synchronous success callback.
+                // Its submission exception must not turn accepted success into fallback.
+                throw IllegalStateException("post-completion submission failure")
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable++ }
+        )
+        sequence.start()
+        assertEquals(listOf(first), attempted)
+        assertEquals(listOf(first), recovered)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
     @Test fun recoveredCallbackThrowCannotRetryNativeOpenOrReportUnavailable() {
         val first = File("autosave-first.sc")
         val backup = File("autosave-backup.sc")
