@@ -967,4 +967,20 @@ class AutosaveSnapshotStoreTest {
         assertFalse(sequence.isActive())
     }
 
+
+    @Test fun throwingPreferenceCommitPreservesLastValidRecoveryPointer() {
+        val dir = tmp.newFolder("throwing-preference-commit")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("last valid design") }
+        val candidateStore = AutosaveSnapshotStore(dir) {
+            throw IllegalStateException("preference storage unavailable")
+        }
+        val candidate = candidateStore.stage(previous.absolutePath)
+        candidate.target.writeText("new uncommitted design")
+
+        assertFalse(candidateStore.finish(candidate, nativeSaveSucceeded = true))
+        assertFalse("Uncommitted candidate must be removed", candidate.target.exists())
+        assertEquals("last valid design", previous.readText())
+        assertEquals(listOf(previous), candidateStore.recoveryCandidates(previous.absolutePath))
+    }
+
 }
