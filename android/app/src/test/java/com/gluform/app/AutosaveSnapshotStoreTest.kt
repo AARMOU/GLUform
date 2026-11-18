@@ -1109,4 +1109,50 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun concurrentCancellationAfterAcceptedRecoverySuccessDoesNotReopenFallback() {
+        // A successful native completion owns terminal recovery before calling the consumer.
+        // A simultaneous manual-open cancellation must not resurrect fallback or duplicate
+        // publication, even while the first consumer callback is still running.
+        val first = File("autosave-accepted-first.sc")
+        val fallback = File("autosave-accepted-fallback.sc")
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        val opened = mutableListOf<File>()
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        val enteredPublication = java.util.concurrent.CountDownLatch(1)
+        val releasePublication = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                opened.add(file)
+                completions.add(done)
+            },
+            onRecovered = {
+                assertEquals(first, it)
+                enteredPublication.countDown()
+                check(releasePublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                published.incrementAndGet()
+            },
+            onUnavailable = { fail("Accepted success cannot become exhaustion") }
+        )
+        try {
+            sequence.start()
+            val completion = completions.single()
+            val publishing = pool.submit { completion(true) }
+            assertTrue("Success was not accepted", enteredPublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("Accepted recovery must already be terminal", sequence.isActive())
+            sequence.cancel() // Concurrent manual-open cancellation during publication.
+            completion(false) // Duplicate contradictory completion must not open fallback.
+            completion(true)
+            releasePublication.countDown()
+            publishing.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf(first), opened)
+            assertEquals(1, published.get())
+            assertFalse(sequence.isActive())
+        } finally {
+            releasePublication.countDown()
+            pool.shutdownNow()
+        }
+    }
+
 }
