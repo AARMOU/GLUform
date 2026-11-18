@@ -101,12 +101,23 @@ internal class AutosaveRecoverySequence(
     @Synchronized fun cancel() { active = false }
 
     private fun attemptNext() {
-        if (!active) return
-        val file = candidates.getOrNull(index++) ?: run {
-            active = false
+        // Claim the next candidate (or terminal exhaustion) atomically with cancel().
+        // Never hold this monitor across native submission or external callbacks.
+        val selection = synchronized(this) {
+            if (!active) return
+            val next = candidates.getOrNull(index)
+            if (next == null) {
+                active = false
+            } else {
+                index++
+            }
+            next
+        }
+        if (selection == null) {
             onUnavailable()
             return
         }
+        val file = selection
         var completed = false
         val finish: (Boolean) -> Unit = { success ->
             // Ignore duplicated or late completions after cancellation/user document open.
