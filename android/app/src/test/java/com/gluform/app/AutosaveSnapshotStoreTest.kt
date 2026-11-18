@@ -1068,4 +1068,45 @@ class AutosaveSnapshotStoreTest {
             executor.shutdownNow()
         }
     }
+
+    @Test fun cancelledFallbackSubmissionCannotPublishLateNativeSuccess() {
+        val first = File("autosave-rejected-first.sc")
+        val fallback = File("autosave-cancelled-fallback.sc")
+        val enteredFallback = java.util.concurrent.CountDownLatch(1)
+        val releaseFallback = java.util.concurrent.CountDownLatch(1)
+        val opened = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val recovered = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                opened.add(file)
+                if (file == first) {
+                    done(false)
+                } else {
+                    enteredFallback.countDown()
+                    check(releaseFallback.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    done(true)
+                }
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        try {
+            val running = worker.submit { sequence.start() }
+            assertTrue(enteredFallback.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            sequence.cancel()
+            releaseFallback.countDown()
+            running.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf(first, fallback), opened.toList())
+            assertTrue("Late fallback success must not publish after manual Open", recovered.isEmpty())
+            assertEquals(0, unavailable.get())
+            assertFalse(sequence.isActive())
+        } finally {
+            releaseFallback.countDown()
+            worker.shutdownNow()
+        }
+    }
+
 }
