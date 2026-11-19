@@ -57,9 +57,9 @@ jobs:
       - name: Fetch ARM64 engine from successful rotation APK
         uses: actions/download-artifact@v4
         with:
-          name: GLUform-0.1.0-Fold-rotation-test-arm64
+          name: GLUform-0.1.0-touch-ui-fast-arm64
           repository: AARMOU/GLUform
-          run-id: 43142673718
+          run-id: 44438249555
           github-token: ${{ github.token }}
           path: previous-apk
 
@@ -69,6 +69,7 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           unzip -p previous-apk/app-debug.apk lib/arm64-v8a/libcadbridge.so > android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
           test -s android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+          echo 'c673db9084fe9f0856114509b1a242fcf7cccfad031e4dc0d48ebba00d11795e  android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so' | sha256sum --check
           file android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
 
       - name: Run Fold layout and touch UI tests
