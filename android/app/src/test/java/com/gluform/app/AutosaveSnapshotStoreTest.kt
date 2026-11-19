@@ -1155,4 +1155,41 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+
+    @Test fun concurrentSupersessionCannotLeaveAutosaveEnabled() {
+        // A native success and a newer user Open can race on different threads.
+        // Regardless of which acquires the gate monitor first, the newer Open
+        // must leave autosave inhibited until its own successful completion.
+        repeat(100) {
+            val gate = ManualOpenAutosaveGate()
+            val oldRequest = gate.begin()
+            val start = java.util.concurrent.CountDownLatch(1)
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+            try {
+                val oldCompletion = pool.submit<Boolean> {
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    gate.succeeded(oldRequest)
+                }
+                val newOpen = pool.submit<Long> {
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    gate.begin()
+                }
+                start.countDown()
+                val acceptedOld = oldCompletion.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                val newRequest = newOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertTrue(newRequest > oldRequest)
+                assertFalse("Newer Open must inhibit autosave after concurrent old success", gate.mayAutosave())
+                assertFalse(gate.succeeded(oldRequest))
+                assertTrue(gate.isPending(newRequest))
+                assertTrue(gate.succeeded(newRequest))
+                assertTrue(gate.mayAutosave())
+                // Both orders are legal: the old success may have won before begin().
+                if (acceptedOld) assertFalse(gate.succeeded(oldRequest))
+            } finally {
+                start.countDown()
+                pool.shutdownNow()
+            }
+        }
+    }
+
 }
