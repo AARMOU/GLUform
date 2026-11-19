@@ -174,5 +174,16 @@ internal class ManualOpenAutosaveGate {
     // Separate volatile reads could otherwise observe a mixed request transition.
     @Synchronized fun isPending(request: Long): Boolean = request == generation && awaitingSuccess
 
+    /** Ignore recovery exhaustion that was superseded by a newer manual document open. */
+    @Synchronized fun inhibitIfGenerationUnchanged(expected: Long): Boolean {
+        if (generation != expected) return false
+        safe = false
+        awaitingSuccess = true
+        generation++
+        return true
+    }
+
+    @Synchronized fun currentGeneration(): Long = generation
+
     fun mayAutosave(): Boolean = safe
 }
