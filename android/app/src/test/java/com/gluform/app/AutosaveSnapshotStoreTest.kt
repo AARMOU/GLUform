@@ -1192,4 +1192,14 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun exhaustedRecoveryCannotInhibitAutosaveAfterNewerManualOpenSucceeds() {
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val request = gate.begin()
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+        assertFalse(gate.inhibitIfGenerationUnchanged(recoveryGeneration))
+        assertTrue("Stale recovery exhaustion must not disable the newer document", gate.mayAutosave())
+    }
+
 }
