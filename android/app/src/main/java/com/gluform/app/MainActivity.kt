@@ -48,6 +48,7 @@ class MainActivity : ComponentActivity(), FileOps {
         }
         val candidates = store.recoveryCandidates(prefs.getString("autosave", null))
         if (candidates.isEmpty()) return
+        val recoveryGateGeneration = manualOpenGate.currentGeneration()
         val recovery = AutosaveRecoverySequence(
             candidates = candidates,
             open = { file, finished ->
@@ -71,8 +72,9 @@ class MainActivity : ComponentActivity(), FileOps {
                 autosaveRecovery = null
                 // All native recovery opens failed: the engine document state is unknown.
                 // Do not overwrite preserved snapshots when the activity backgrounds.
-                manualOpenGate.begin()
-                Cad.message = "Autosave recovery failed; original snapshots were preserved"
+                if (manualOpenGate.inhibitIfGenerationUnchanged(recoveryGateGeneration)) {
+                    Cad.message = "Autosave recovery failed; original snapshots were preserved"
+                }
             }
         )
         autosaveRecovery = recovery
