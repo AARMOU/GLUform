@@ -1202,4 +1202,36 @@ class AutosaveSnapshotStoreTest {
         assertTrue("Stale recovery exhaustion must not disable the newer document", gate.mayAutosave())
     }
 
+    @Test fun lateSuccessAfterSubmissionExceptionCannotReplaceFallbackRecovery() {
+        val first = File("autosave-submission-throws.sc")
+        val fallback = File("autosave-fallback.sc")
+        var staleCompletion: ((Boolean) -> Unit)? = null
+        val attempts = mutableListOf<File>()
+        val recovered = mutableListOf<File>()
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) {
+                    staleCompletion = done
+                    throw IllegalStateException("native adapter failed after queuing callback")
+                }
+                done(true)
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable++ }
+        ).start()
+
+        assertEquals(listOf(first, fallback), attempts)
+        assertEquals(listOf(fallback), recovered)
+        // A delayed success from the failed submission must never publish the
+        // superseded document or change the already accepted fallback.
+        staleCompletion!!.invoke(true)
+        staleCompletion!!.invoke(false)
+        assertEquals(listOf(first, fallback), attempts)
+        assertEquals(listOf(fallback), recovered)
+        assertEquals(0, unavailable)
+    }
+
 }
