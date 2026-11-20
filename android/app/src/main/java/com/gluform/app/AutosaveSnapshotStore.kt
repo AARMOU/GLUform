@@ -52,14 +52,13 @@ internal class AutosaveSnapshotStore(
             candidate.target.delete()
             return false
         }
-        // A preference backend can throw on storage failure. Preserve the previous
-        // committed recovery pointer and clean up this uncommitted candidate.
+        // The preference backend can report failure (or throw) after persisting the
+        // pointer. Never delete a completed candidate in that ambiguous state:
+        // doing so could leave a durable pointer referencing a missing snapshot.
+        // Recovery enumeration can still discover this retained candidate.
         val committed = runCatching { setCommittedPath(candidate.target.absolutePath) }
             .getOrDefault(false)
-        if (!committed) {
-            candidate.target.delete()
-            return false
-        }
+        if (!committed) return false
         // Do not prune the previous snapshot here. A successful native callback and nonzero
         // length do not prove the replacement can be parsed or recovered after process death.
         // Retention cleanup needs a separately verified document reader and a bounded policy.
