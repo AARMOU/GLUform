@@ -98,7 +98,25 @@ class AutosaveSnapshotStoreTest {
         assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
         assertTrue(prior.exists())
         assertEquals("known-good", prior.readText())
-        assertFalse(candidate.target.exists())
+        assertTrue("ambiguous commit failure must retain candidate", candidate.target.exists())
+    }
+
+    @Test fun preferenceWritesPointerThenThrowsCannotLeaveDanglingRecoveryPath() {
+        val dir = tmp.newFolder("ambiguous-commit")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("known-good") }
+        var durablePointer = previous.absolutePath
+        val store = AutosaveSnapshotStore(dir) { path ->
+            durablePointer = path // Simulate persistence before an exception is reported.
+            throw IllegalStateException("backend threw after writing pointer")
+        }
+        val candidate = store.stage(previous.absolutePath)
+        candidate.target.writeText("new snapshot")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(candidate.target.absolutePath, durablePointer)
+        assertTrue("committed pointer must not dangle", candidate.target.exists())
+        assertEquals("known-good", previous.readText())
+        assertEquals(candidate.target, store.recoveryCandidates(durablePointer).first())
     }
 
     @Test fun onlySnapshotsInsideAutosaveDirectoryAreEverPruned() {
@@ -564,8 +582,8 @@ class AutosaveSnapshotStoreTest {
         assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
         assertEquals(prior.absolutePath, committedPath)
         assertEquals("known-good", prior.readText())
-        assertFalse(candidate.target.exists())
-        assertEquals(listOf(prior), store.recoveryCandidates(committedPath))
+        assertTrue(candidate.target.exists())
+        assertTrue(store.recoveryCandidates(committedPath).contains(prior))
     }
     @Test fun preferredRecoveryPointerCannotOpenUnmanagedFileInsideSnapshotDirectory() {
         val dir = tmp.newFolder("unmanaged-preference")
