@@ -996,9 +996,9 @@ class AutosaveSnapshotStoreTest {
         candidate.target.writeText("new uncommitted design")
 
         assertFalse(candidateStore.finish(candidate, nativeSaveSucceeded = true))
-        assertFalse("Uncommitted candidate must be removed", candidate.target.exists())
+        assertTrue("Ambiguous preference commit must retain the completed candidate", candidate.target.exists())
         assertEquals("last valid design", previous.readText())
-        assertEquals(listOf(previous), candidateStore.recoveryCandidates(previous.absolutePath))
+        assertEquals(listOf(previous, candidate.target), candidateStore.recoveryCandidates(previous.absolutePath))
     }
 
     @Test fun acceptedRecoverySuccessIsTerminalBeforeConsumerCallback() {
