@@ -57,7 +57,10 @@ class MainActivity : ComponentActivity(), FileOps {
                     finished(r != null)
                 }
             },
-            onRecovered = { file ->
+            onRecovered = recovered@{ file ->
+                // A native success can be accepted just before Manual Open cancels recovery.
+                // Never publish its stale URI, camera fit, or recovery pointer afterward.
+                if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
                 autosaveRecovery = null
                 Cad.fit()
                 saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
