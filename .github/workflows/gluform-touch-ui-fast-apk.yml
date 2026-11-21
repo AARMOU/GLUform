@@ -5,6 +5,7 @@ on:
     branches:
       - gluese/touch-ui-overhaul-20261111
       - glu/worker-p0-autosave-20261111
+      - glu/fix-viewport-camera-overlay-autosave-20261113
     paths:
       - 'android/**'
       - '.github/workflows/gluform-touch-ui-fast-apk.yml'
