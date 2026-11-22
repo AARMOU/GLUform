@@ -1,6 +1,9 @@
 package com.gluform.app
 
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.nio.charset.StandardCharsets
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -91,4 +94,29 @@ class DiagnosticsTest {
         assertFalse(Diagnostics.mayRecordCrash(0L, 0L, reserve, paused = false))
     }
 
+    @Test fun historicalExportRedactsLegacySecretsAndRetainsSafeEvents() {
+        val legacy = """{"event":"sketch.visible","message":"geometry=4"}""" + "\n" +
+            """{"event":"error","message":"password=hunter2 /private/design.sc"}""" + "\n"
+        val output = ByteArrayOutputStream()
+        val count = Diagnostics.copyRedactedHistory(
+            ByteArrayInputStream(legacy.toByteArray(StandardCharsets.UTF_8)), output)
+        val exported = output.toString("UTF-8")
+        assertEquals(output.size().toLong(), count)
+        assertTrue(exported.contains("sketch.visible"))
+        assertTrue(exported.contains("geometry=4"))
+        assertFalse(exported.contains("hunter2"))
+        assertFalse(exported.contains("design.sc"))
+        assertTrue(exported.contains("[REDACTED_SECRET]"))
+        assertTrue(exported.contains("[REDACTED_PATH]"))
+    }
+
+    @Test fun historicalExportBoundsSingleHugeLegacyRecord() {
+        val input = ("x".repeat(100_000) + "password=legacysecret\n").toByteArray()
+        val output = ByteArrayOutputStream()
+        Diagnostics.copyRedactedHistory(ByteArrayInputStream(input), output)
+        val result = output.toString("UTF-8")
+        assertTrue(result.length < 5000)
+        assertTrue(result.contains("[TRUNCATED_LEGACY_RECORD]"))
+        assertFalse(result.contains("legacysecret"))
+    }
 }

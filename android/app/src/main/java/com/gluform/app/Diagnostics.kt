@@ -12,6 +12,9 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedWriter
+import java.io.InputStream
+import java.io.OutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
@@ -188,6 +191,40 @@ object Diagnostics {
         if (initialized) io.execute { runCatching { writer?.flush() } }
     }
 
+    /**
+     * Export legacy records through the current redaction policy, without buffering
+     * an entire historical file or an attacker-controlled oversized line.
+     * Oversized records are deliberately truncated rather than exported raw.
+     */
+    internal fun copyRedactedHistory(input: InputStream, output: OutputStream): Long {
+        val maxLineBytes = 8192
+        val line = ByteArrayOutputStream(maxLineBytes)
+        val buffered = input.buffered(65536)
+        var oversized = false
+        var exported = 0L
+        fun emit() {
+            if (line.size() == 0 && !oversized) return
+            val sanitized = safeMessage(line.toString(StandardCharsets.UTF_8.name())) +
+                if (oversized) " [TRUNCATED_LEGACY_RECORD]" else ""
+            val bytes = (sanitized + "\n").toByteArray(StandardCharsets.UTF_8)
+            output.write(bytes)
+            exported += bytes.size
+            line.reset()
+            oversized = false
+        }
+        while (true) {
+            val next = buffered.read()
+            if (next == -1) break
+            if (next == 10) emit()
+            else if (!oversized) {
+                if (line.size() < maxLineBytes) line.write(next)
+                else oversized = true
+            }
+        }
+        emit()
+        return exported
+    }
+
     /** Serializes after prior events; exports existing logs plus the current session. */
     fun export(resolver: ContentResolver, uri: Uri, done: (Boolean, String) -> Unit) {
         event("diagnostics.export.request", "user selected a local destination")
@@ -203,7 +240,7 @@ object Diagnostics {
                 stream.use { out ->
                     for (file in files) {
                         out.write(("\n=== GLUform session " + file.name + " ===\n").toByteArray(StandardCharsets.UTF_8))
-                        file.inputStream().buffered().use { input -> bytes += input.copyTo(out, 65536) }
+                        file.inputStream().use { input -> bytes += copyRedactedHistory(input, out) }
                     }
                 }
                 "Exported " + files.size + " session(s), " + bytes + " diagnostic bytes" +
