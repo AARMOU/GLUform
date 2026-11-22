@@ -63,7 +63,11 @@ class MainActivity : ComponentActivity(), FileOps {
                 if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
                 autosaveRecovery = null
                 Cad.fit()
+                // Camera fitting may dispatch work; a newer manual open must win before
+                // restoring the previous URI or publishing the recovered snapshot.
+                if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
                 saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
+                if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
                 // A successful native reopen, not merely nonzero bytes, selects the backup.
                 if (prefs.getString("autosave", null) != file.absolutePath &&
                     !prefs.edit().putString("autosave", file.absolutePath).commit()
