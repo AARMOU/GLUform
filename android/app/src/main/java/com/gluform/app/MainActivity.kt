@@ -150,6 +150,9 @@ class MainActivity : ComponentActivity(), FileOps {
                         if (!manualOpenGate.succeeded(openRequest!!)) return@exec
                     }
                     Cad.fit()
+                    // Fitting can admit a newer manual open. Do not let an older
+                    // successful callback mark that newer document saved or restore its URI.
+                    if (!insert && manualOpenGate.currentGeneration() != openRequest!!) return@exec
                     if (!insert) {
                         Cad.markSaved()
                         saveUri = if (ext == "sc" || ext == "solidcraft") u.also { runCatching { contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) } } else null
