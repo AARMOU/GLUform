@@ -1210,6 +1210,47 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+
+    @Test fun acceptedRecoveryCannotCommitPointerAfterManualOpenSupersedesPublication() {
+        // Native success may be accepted before a newer user Open, while the consumer
+        // callback has not yet checked its generation. This is not a JNI integration test.
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val enteredPublication = java.util.concurrent.CountDownLatch(1)
+        val releasePublication = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        val candidate = File("autosave-accepted-before-manual-open.sc")
+        var completion: ((Boolean) -> Unit)? = null
+        val recovery = AutosaveRecoverySequence(
+            listOf(candidate),
+            open = { _, done -> completion = done },
+            onRecovered = {
+                enteredPublication.countDown()
+                check(releasePublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                // Mirrors MainActivity's guard before camera/URI/pointer publication.
+                if (gate.currentGeneration() == recoveryGeneration) published.incrementAndGet()
+            },
+            onUnavailable = { fail("Accepted native success cannot become exhaustion") }
+        )
+        try {
+            recovery.start()
+            val completing = worker.submit { completion!!(true) }
+            assertTrue(enteredPublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(recovery.isActive())
+            val manualRequest = gate.begin()
+            recovery.cancel()
+            releasePublication.countDown()
+            completing.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("Stale recovery must not publish a pointer", 0, published.get())
+            assertFalse("Manual Open must inhibit autosave", gate.mayAutosave())
+            assertTrue(gate.isPending(manualRequest))
+        } finally {
+            releasePublication.countDown()
+            worker.shutdownNow()
+        }
+    }
+
     @Test fun exhaustedRecoveryCannotInhibitAutosaveAfterNewerManualOpenSucceeds() {
         val gate = ManualOpenAutosaveGate()
         val recoveryGeneration = gate.currentGeneration()
