@@ -1251,6 +1251,46 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+
+    @Test fun recoveryPointerPublicationCannotInterleaveWithNewManualOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val enteredCommit = java.util.concurrent.CountDownLatch(1)
+        val releaseCommit = java.util.concurrent.CountDownLatch(1)
+        val openAttempted = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        try {
+            val publishing = worker.submit<Boolean> {
+                gate.publishIfCurrent(recoveryGeneration) {
+                    enteredCommit.countDown()
+                    check(releaseCommit.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    published.incrementAndGet()
+                }
+            }
+            assertTrue(enteredCommit.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerOpen = worker.submit<Long> {
+                openAttempted.countDown()
+                gate.begin()
+            }
+            assertTrue(openAttempted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // Manual Open must wait for an already-admitted preference commit.
+            releaseCommit.countDown()
+            assertTrue(publishing.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerGeneration = newerOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(1, published.get())
+            assertFalse(gate.mayAutosave())
+            assertFalse("Old recovery must never publish after newer Open", gate.publishIfCurrent(recoveryGeneration) {
+                published.incrementAndGet()
+            })
+            assertEquals(1, published.get())
+            assertTrue(gate.isPending(newerGeneration))
+        } finally {
+            releaseCommit.countDown()
+            worker.shutdownNow()
+        }
+    }
+
     @Test fun exhaustedRecoveryCannotInhibitAutosaveAfterNewerManualOpenSucceeds() {
         val gate = ManualOpenAutosaveGate()
         val recoveryGeneration = gate.currentGeneration()
