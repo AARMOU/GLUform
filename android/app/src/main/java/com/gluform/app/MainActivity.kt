@@ -115,12 +115,14 @@ class MainActivity : ComponentActivity(), FileOps {
             // Serialize the final generation checks and recovery-pointer commit with manual
             // Open admission. A new Open must never slip between validation and publication.
             var saved = false
-            val published = manualOpenGate.publishIfCurrent(openGeneration) {
-                if (manualOpenGate.mayAutosave() && autosaveGeneration.isLatest(request)) {
+            var eligible = false
+            manualOpenGate.publishIfCurrent(openGeneration) {
+                eligible = manualOpenGate.mayAutosave() && autosaveGeneration.isLatest(request)
+                if (eligible) {
                     saved = runCatching { store.finish(candidate, result != null) }.getOrDefault(false)
                 }
             }
-            if (!published || !manualOpenGate.mayAutosave() || !autosaveGeneration.isLatest(request)) {
+            if (!eligible) {
                 // A superseded candidate is never allowed to replace the recovery pointer.
                 candidate.target.delete()
                 return@exec
