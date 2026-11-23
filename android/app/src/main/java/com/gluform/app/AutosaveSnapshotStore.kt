@@ -184,5 +184,15 @@ internal class ManualOpenAutosaveGate {
 
     @Synchronized fun currentGeneration(): Long = generation
 
+    /**
+     * Serialize a short preference publication with begin(). Do not call JNI or camera fitting
+     * inside this block: those operations can reenter the engine or block indefinitely.
+     */
+    @Synchronized fun publishIfCurrent(expected: Long, publish: () -> Unit): Boolean {
+        if (generation != expected) return false
+        publish()
+        return true
+    }
+
     fun mayAutosave(): Boolean = safe
 }
