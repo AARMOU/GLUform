@@ -109,13 +109,22 @@ class MainActivity : ComponentActivity(), FileOps {
             Cad.message = "Autosave unavailable: ${it.message ?: "cannot prepare file"}"
             return
         }
+        val openGeneration = manualOpenGate.currentGeneration()
         val request = autosaveGeneration.next()
         Cad.exec("file.save_as", JSONObject().put("path", candidate.target.absolutePath).put("overwrite", true), quiet = true) { result ->
-            if (!autosaveGeneration.isLatest(request)) {
-                candidate.target.delete() // superseded by a more recent snapshot
+            // Serialize the final generation checks and recovery-pointer commit with manual
+            // Open admission. A new Open must never slip between validation and publication.
+            var saved = false
+            val published = manualOpenGate.publishIfCurrent(openGeneration) {
+                if (manualOpenGate.mayAutosave() && autosaveGeneration.isLatest(request)) {
+                    saved = runCatching { store.finish(candidate, result != null) }.getOrDefault(false)
+                }
+            }
+            if (!published || !manualOpenGate.mayAutosave() || !autosaveGeneration.isLatest(request)) {
+                // A superseded candidate is never allowed to replace the recovery pointer.
+                candidate.target.delete()
                 return@exec
             }
-            val saved = runCatching { store.finish(candidate, result != null) }.getOrDefault(false)
             if (!saved) Cad.message = "Autosave failed; your previous recovery snapshot was preserved"
         }
     }
