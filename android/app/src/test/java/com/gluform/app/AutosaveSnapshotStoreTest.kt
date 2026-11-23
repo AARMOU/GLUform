@@ -1291,6 +1291,34 @@ class AutosaveSnapshotStoreTest {
         }
     }
 
+    @Test fun failedRecoveryPreferencePublicationReleasesGateForNewManualOpen() {
+        // A preference commit may throw (for example, storage failure). The gate
+        // must not strand the UI or authorize autosave of the failed recovery.
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            try {
+                gate.publishIfCurrent(recoveryGeneration) {
+                    throw IllegalStateException("simulated preference commit failure")
+                }
+                fail("Preference failure must propagate to the recovery handler")
+            } catch (expected: IllegalStateException) {
+                assertEquals("simulated preference commit failure", expected.message)
+            }
+            val request = worker.submit<Long> { gate.begin() }
+                .get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse("New manual Open must inhibit autosave", gate.mayAutosave())
+            assertTrue(gate.isPending(request))
+            assertFalse("Failed recovery cannot publish after newer Open",
+                gate.publishIfCurrent(recoveryGeneration) { fail("stale commit executed") })
+            assertTrue(gate.succeeded(request))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
     @Test fun exhaustedRecoveryCannotInhibitAutosaveAfterNewerManualOpenSucceeds() {
         val gate = ManualOpenAutosaveGate()
         val recoveryGeneration = gate.currentGeneration()
