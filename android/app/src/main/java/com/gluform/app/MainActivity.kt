@@ -66,13 +66,17 @@ class MainActivity : ComponentActivity(), FileOps {
                 // Camera fitting may dispatch work; a newer manual open must win before
                 // restoring the previous URI or publishing the recovered snapshot.
                 if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
-                saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
-                if (manualOpenGate.currentGeneration() != recoveryGateGeneration) return@recovered
-                // A successful native reopen, not merely nonzero bytes, selects the backup.
-                if (prefs.getString("autosave", null) != file.absolutePath &&
-                    !prefs.edit().putString("autosave", file.absolutePath).commit()
-                ) {
-                    Cad.message = "Previous design recovered, but its recovery pointer was not saved"
+                // The generation check and preference commit must be one short critical
+                // section. A newer manual Open cannot interleave between them.
+                // Keep Cad.fit() and all native calls outside the gate monitor.
+                manualOpenGate.publishIfCurrent(recoveryGateGeneration) {
+                    saveUri = prefs.getString("saveUri", null)?.let(Uri::parse)
+                    // A successful native reopen, not merely nonzero bytes, selects the backup.
+                    if (prefs.getString("autosave", null) != file.absolutePath &&
+                        !prefs.edit().putString("autosave", file.absolutePath).commit()
+                    ) {
+                        Cad.message = "Previous design recovered, but its recovery pointer was not saved"
+                    }
                 }
             },
             onUnavailable = {
