@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - gluese/touch-ui-overhaul-20261111
+      - glu/worker-p0-autosave-20261111
     paths:
       - 'android/**'
       - '.github/workflows/gluform-touch-ui-fast-apk.yml'
@@ -56,9 +57,9 @@ jobs:
       - name: Fetch ARM64 engine from successful rotation APK
         uses: actions/download-artifact@v4
         with:
-          name: GLUform-0.1.0-Fold-rotation-test-arm64
+          name: GLUform-0.1.0-touch-ui-fast-arm64
           repository: AARMOU/GLUform
-          run-id: 43142673718
+          run-id: 44438249555
           github-token: ${{ github.token }}
           path: previous-apk
 
@@ -68,11 +69,12 @@ jobs:
           mkdir -p android/app/src/main/jniLibs/arm64-v8a
           unzip -p previous-apk/app-debug.apk lib/arm64-v8a/libcadbridge.so > android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
           test -s android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
+          echo 'c673db9084fe9f0856114509b1a242fcf7cccfad031e4dc0d48ebba00d11795e  android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so' | sha256sum --check
           file android/app/src/main/jniLibs/arm64-v8a/libcadbridge.so
 
       - name: Run Fold layout and touch UI tests
         working-directory: android
-        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest'
+        run: gradle --no-daemon :app:testDebugUnitTest --tests 'com.gluform.app.ViewportLayoutTest' --tests 'com.gluform.app.TouchUiTest' --tests 'com.gluform.app.AutosaveSnapshotStoreTest' --tests 'com.gluform.app.IncomingDocumentFileTest' --tests 'com.gluform.app.AutosavePointerFalseCommitTest'
 
       - name: Assemble Android debug APK
         working-directory: android

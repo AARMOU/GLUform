@@ -1,0 +1,1364 @@
+package com.gluform.app
+
+import org.junit.Assert.*
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+
+class AutosaveSnapshotStoreTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    @Test fun previousSnapshotSurvivesWhileNewSaveIsInFlight() {
+        val dir = tmp.newFolder("snapshots")
+        val previous = File(dir, "old.sc").apply { writeText("previous valid design") }
+        var path: String? = previous.absolutePath
+        val store = AutosaveSnapshotStore(dir) { path = it; true }
+
+        val candidate = store.stage(previous.absolutePath)
+        assertTrue(previous.exists())
+        assertEquals(previous.absolutePath, path)
+        assertFalse(candidate.target.exists())
+        assertNotEquals(previous.absolutePath, candidate.target.absolutePath)
+    }
+
+    @Test fun nativeSaveFailureDoesNotDiscardLastWorkingDocument() {
+        val dir = tmp.newFolder("native-failure")
+        val previous = File(dir, "old.sc").apply { writeText("known-good") }
+        var path: String? = previous.absolutePath
+        val store = AutosaveSnapshotStore(dir) { path = it; true }
+        val candidate = store.stage(previous.absolutePath)
+        candidate.target.writeText("partial failed write")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = false))
+        assertTrue(previous.exists())
+        assertEquals("known-good", previous.readText())
+        assertEquals(previous.absolutePath, path)
+        assertFalse(candidate.target.exists())
+    }
+
+    @Test fun emptyNativeResultCannotReplaceValidSnapshot() {
+        val dir = tmp.newFolder("zero-bytes")
+        val old = File(dir, "old.sc").apply { writeText("recovery") }
+        var path: String? = old.absolutePath
+        val store = AutosaveSnapshotStore(dir) { path = it; true }
+        val candidate = store.stage(old.absolutePath)
+        candidate.target.createNewFile()
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(old.absolutePath, path)
+        assertTrue(old.exists())
+    }
+
+    @Test fun successfulSaveCommitsPointerAndRetainsPriorRecoveryFile() {
+        val dir = tmp.newFolder("success")
+        val prior = File(dir, "old.sc").apply { writeText("prior") }
+        var path: String? = prior.absolutePath
+        var oldWasPresentWhenPreferenceChanged = false
+        val store = AutosaveSnapshotStore(dir) {
+            oldWasPresentWhenPreferenceChanged = prior.exists()
+            path = it
+            true
+        }
+        val candidate = store.stage(prior.absolutePath)
+        candidate.target.writeText("next snapshot")
+
+        assertTrue(store.finish(candidate, nativeSaveSucceeded = true))
+        assertTrue(oldWasPresentWhenPreferenceChanged)
+        assertEquals(candidate.target.absolutePath, path)
+        assertTrue(candidate.target.exists())
+        assertTrue(prior.exists())
+        assertEquals("prior", prior.readText())
+    }
+
+    @Test fun nativeSuccessWithNonemptyCorruptOutputDoesNotDestroyPriorRecovery() {
+        val dir = tmp.newFolder("corrupt-output")
+        val prior = File(dir, "old.sc").apply { writeText("known-good") }
+        var committedPath: String? = prior.absolutePath
+        val store = AutosaveSnapshotStore(dir) { committedPath = it; true }
+        val candidate = store.stage(prior.absolutePath)
+        // Simulate a native callback that reports success despite a nonempty truncated file.
+        candidate.target.writeText("not a recoverable CAD document")
+
+        assertTrue(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(candidate.target.absolutePath, committedPath)
+        assertTrue(prior.exists())
+        assertEquals("known-good", prior.readText())
+        // New path may not be recoverable; prior file must remain available for a future
+        // explicit recovery/fallback implementation.
+    }
+
+    @Test fun failedPreferenceCommitKeepsKnownGoodAndDeletesCandidate() {
+        val dir = tmp.newFolder("commit-failed")
+        val prior = File(dir, "old.sc").apply { writeText("known-good") }
+        val store = AutosaveSnapshotStore(dir) { false }
+        val candidate = store.stage(prior.absolutePath)
+        candidate.target.writeText("new-but-not-committed")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertTrue(prior.exists())
+        assertEquals("known-good", prior.readText())
+        assertTrue("ambiguous commit failure must retain candidate", candidate.target.exists())
+    }
+
+    @Test fun preferenceWritesPointerThenThrowsCannotLeaveDanglingRecoveryPath() {
+        val dir = tmp.newFolder("ambiguous-commit")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("known-good") }
+        var durablePointer = previous.absolutePath
+        val store = AutosaveSnapshotStore(dir) { path ->
+            durablePointer = path // Simulate persistence before an exception is reported.
+            throw IllegalStateException("backend threw after writing pointer")
+        }
+        val candidate = store.stage(previous.absolutePath)
+        candidate.target.writeText("new snapshot")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(candidate.target.absolutePath, durablePointer)
+        assertTrue("committed pointer must not dangle", candidate.target.exists())
+        assertEquals("known-good", previous.readText())
+        assertEquals(candidate.target, store.recoveryCandidates(durablePointer).first())
+    }
+
+    @Test fun onlySnapshotsInsideAutosaveDirectoryAreEverPruned() {
+        val dir = tmp.newFolder("owned")
+        val external = tmp.newFile("external.sc").apply { writeText("must not delete") }
+        val store = AutosaveSnapshotStore(dir) { true }
+        val candidate = store.stage(external.absolutePath)
+        candidate.target.writeText("saved")
+
+        assertTrue(store.finish(candidate, nativeSaveSucceeded = true))
+        assertTrue(external.exists())
+    }
+
+    @Test fun rapidBackgroundSavesHaveUniqueCandidatesAndLatestToken() {
+        val dir = tmp.newFolder("multiple")
+        val store = AutosaveSnapshotStore(dir) { true }
+        val tracker = AutosaveGeneration()
+        val first = store.stage(null)
+        val id1 = tracker.next()
+        val second = store.stage(null)
+        val id2 = tracker.next()
+
+        assertNotEquals(first.target.absolutePath, second.target.absolutePath)
+        assertFalse(tracker.isLatest(id1))
+        assertTrue(tracker.isLatest(id2))
+    }
+    @Test fun recoveryPrefersCommittedCandidateThenFallsBackToOlderSnapshot() {
+        val dir = tmp.newFolder("recovery-order")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("good"); setLastModified(1000L) }
+        val latest = File(dir, "autosave-latest.sc").apply { writeText("corrupt"); setLastModified(2000L) }
+        val store = AutosaveSnapshotStore(dir) { true }
+        assertEquals(listOf(latest, previous), store.recoveryCandidates(latest.absolutePath))
+        // A failed native doc.open would advance to the next candidate; ranking does not
+        // mistake nonempty content for a validated CAD document.
+        assertEquals(previous, store.recoveryCandidates(latest.absolutePath)[1])
+        assertTrue(previous.exists())
+    }
+
+    @Test fun recoveryNeverReadsExternalOrEmptySnapshots() {
+        val dir = tmp.newFolder("recovery-contained")
+        val external = tmp.newFile("private.sc").apply { writeText("outside") }
+        File(dir, "autosave-empty.sc").createNewFile()
+        val valid = File(dir, "autosave-good.sc").apply { writeText("recoverable") }
+        File(dir, "unrelated.sc").writeText("not managed")
+        val store = AutosaveSnapshotStore(dir) { true }
+        assertEquals(listOf(valid), store.recoveryCandidates(external.absolutePath))
+        assertTrue(external.exists())
+    }
+
+    @Test fun repeatedRecoveryEnumerationDoesNotPruneFinalSnapshot() {
+        val dir = tmp.newFolder("recovery-retained")
+        val only = File(dir, "autosave-only.sc").apply { writeText("last good") }
+        val store = AutosaveSnapshotStore(dir) { true }
+        repeat(20) { assertEquals(listOf(only), store.recoveryCandidates(only.absolutePath)) }
+        assertEquals("last good", only.readText())
+    }
+
+
+    @Test fun failedNativeOpenFallsBackOneSnapshotAtATime() {
+        val dir = tmp.newFolder("async-recovery")
+        val old = File(dir, "autosave-old.sc").apply { writeText("valid"); setLastModified(1000) }
+        val newest = File(dir, "autosave-latest.sc").apply { writeText("corrupt"); setLastModified(2000) }
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var recovered: File? = null
+        var exhausted = false
+        val store = AutosaveSnapshotStore(dir) { true }
+        val recovery = AutosaveRecoverySequence(
+            store.recoveryCandidates(newest.absolutePath),
+            open = { f, finish -> attempts.add(f); completions.add(finish) },
+            onRecovered = { recovered = it },
+            onUnavailable = { exhausted = true }
+        )
+        recovery.start()
+        assertEquals(listOf(newest), attempts)
+        completions[0](false)
+        assertEquals(listOf(newest, old), attempts)
+        assertNull(recovered)
+        completions[1](true)
+        assertEquals(old, recovered)
+        assertFalse(exhausted)
+        assertTrue(newest.exists())
+        assertTrue(old.exists())
+    }
+
+    @Test fun cancelledRecoveryIgnoresLateNativeFailureAndSuccess() {
+        val files = listOf(File("new.sc"), File("old.sc"))
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var recovered = false
+        var unavailable = false
+        val recovery = AutosaveRecoverySequence(
+            files,
+            open = { f, done -> attempts.add(f); completions.add(done) },
+            onRecovered = { recovered = true },
+            onUnavailable = { unavailable = true }
+        )
+        recovery.start()
+        recovery.cancel() // User explicitly opens a different document.
+        completions.single()(false)
+        completions.single()(true)
+        assertEquals(listOf(files.first()), attempts)
+        assertFalse(recovered)
+        assertFalse(unavailable)
+    }
+
+    @Test fun duplicatedCallbacksDoNotReopenOrOverwriteAnotherDocument() {
+        val files = listOf(File("broken.sc"), File("good.sc"))
+        val attempts = mutableListOf<File>()
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        var successes = 0
+        var failures = 0
+        val recovery = AutosaveRecoverySequence(
+            files,
+            open = { f, done -> attempts.add(f); completions.add(done) },
+            onRecovered = { successes++ },
+            onUnavailable = { failures++ }
+        )
+        recovery.start()
+        completions[0](false)
+        completions[0](false)
+        assertEquals(files, attempts)
+        completions[1](true)
+        completions[1](false)
+        assertEquals(1, successes)
+        assertEquals(0, failures)
+        assertEquals(files, attempts)
+    }
+
+    @Test fun manualOpenCancelsRecoveryAfterFirstFallbackFailure() {
+        val latest = File("autosave-corrupt.sc")
+        val backup = File("autosave-good.sc")
+        val callbacks = mutableListOf<(Boolean) -> Unit>()
+        val attempts = mutableListOf<File>()
+        var recovered: File? = null
+        var exhausted = false
+        val sequence = AutosaveRecoverySequence(
+            listOf(latest, backup),
+            open = { file, done -> attempts.add(file); callbacks.add(done) },
+            onRecovered = { recovered = it },
+            onUnavailable = { exhausted = true }
+        )
+        sequence.start()
+        callbacks[0](false) // A fallback open is now in flight.
+        assertEquals(listOf(latest, backup), attempts)
+        sequence.cancel() // Explicit user Open must win over a late native callback.
+        callbacks[1](true)
+        callbacks[1](false)
+        assertNull(recovered)
+        assertFalse(exhausted)
+        assertEquals(2, attempts.size)
+    }
+
+    @Test fun repeatedBackgroundTransitionsKeepFinalRecoverableSnapshot() {
+        val dir = tmp.newFolder("repeated-background")
+        val original = File(dir, "autosave-original.sc").apply { writeText("last verified design") }
+        var committedPath = original.absolutePath
+        val store = AutosaveSnapshotStore(dir) { committedPath = it; true }
+        val generations = AutosaveGeneration()
+
+        val first = store.stage(committedPath)
+        val firstToken = generations.next()
+        first.target.writeText("partial first save")
+        val second = store.stage(committedPath)
+        val secondToken = generations.next()
+        second.target.writeText("second save failed")
+
+        // An obsolete completion must not replace the committed recovery pointer.
+        assertFalse(generations.isLatest(firstToken))
+        first.target.delete()
+        assertTrue(generations.isLatest(secondToken))
+        assertFalse(store.finish(second, nativeSaveSucceeded = false))
+        assertEquals(original.absolutePath, committedPath)
+        assertEquals("last verified design", original.readText())
+
+        val third = store.stage(committedPath)
+        generations.next()
+        third.target.writeText("new candidate; not independently reopen-verified")
+        assertTrue(store.finish(third, nativeSaveSucceeded = true))
+        assertEquals(third.target.absolutePath, committedPath)
+        assertTrue(original.exists())
+        assertEquals(listOf(third.target, original), store.recoveryCandidates(committedPath))
+    }
+
+    @Test fun exhaustedRecoveryPreservesSnapshotsAndReportsOneFailure() {
+        val dir = tmp.newFolder("all-corrupt")
+        val a = File(dir, "autosave-a.sc").apply { writeText("invalid") }
+        val b = File(dir, "autosave-b.sc").apply { writeText("invalid") }
+        val attempted = mutableListOf<File>()
+        var failureCount = 0
+        val plan = AutosaveRecoverySequence(
+            listOf(a, b),
+            open = { f, done -> attempted.add(f); done(false) },
+            onRecovered = { fail("Native never succeeded") },
+            onUnavailable = { failureCount++ }
+        )
+        plan.start()
+        assertEquals(listOf(a, b), attempted)
+        assertEquals(1, failureCount)
+        assertTrue(a.exists() && b.exists())
+    }
+
+    @Test fun nativeRecoveryAlreadyQueuedRunsBeforeManualFilePreparationAndLateCallbackIsIgnored() {
+        // Mirrors Cad.exec / Cad.onEngine: both enqueue native work on one FIFO engine executor,
+        // while completion callbacks are posted separately to the Android main queue.
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val nativeOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val mainCallbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val recovery = AutosaveRecoverySequence(
+                listOf(File("autosave-old.sc")),
+                open = { _, done ->
+                    engine.execute {
+                        nativeOrder.add("native recovery open")
+                        mainCallbacks.put { done(true) }
+                    }
+                },
+                onRecovered = { fail("Cancelled recovery must not claim the document") },
+                onUnavailable = { fail("Cancelled recovery must not report exhaustion") }
+            )
+            recovery.start()
+            recovery.cancel() // Manual Open selected while native recovery is queued.
+            val manual = engine.submit {
+                nativeOrder.add("manual file preparation")
+                mainCallbacks.put { nativeOrder.add("manual open callback") }
+            }
+            manual.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf("native recovery open", "manual file preparation"), nativeOrder.toList())
+            // Deliver recovery completion late, after the manual file operation has run.
+            mainCallbacks.take().invoke()
+            mainCallbacks.take().invoke()
+            assertEquals(
+                listOf("native recovery open", "manual file preparation", "manual open callback"),
+                nativeOrder.toList()
+            )
+        } finally {
+            engine.shutdownNow()
+        }
+    }
+
+    @Test fun failedManualOpenNeverEnablesAutosaveOfUnknownNativeState() {
+        val gate = ManualOpenAutosaveGate()
+        assertTrue(gate.mayAutosave())
+        gate.begin()
+        assertFalse(gate.mayAutosave())
+        // File read error and native doc.open failure must leave this gate closed.
+        assertFalse(gate.mayAutosave())
+        val latest = gate.begin() // A second attempt cannot accidentally reopen the gate.
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(latest))
+        assertTrue(gate.mayAutosave())
+        gate.begin()
+        assertFalse(gate.mayAutosave())
+    }
+
+
+    @Test fun failedManualOpenAcrossBackgroundPreservesCommittedRecoveryPointer() {
+        val dir = tmp.newFolder("failed-manual-open-background")
+        val original = File(dir, "autosave-original.sc").apply { writeText("known good design") }
+        var preferred = original.absolutePath
+        var commits = 0
+        val store = AutosaveSnapshotStore(dir) { path ->
+            preferred = path
+            commits++
+            true
+        }
+        val gate = ManualOpenAutosaveGate()
+        val generations = AutosaveGeneration()
+
+        // A background save was queued before the user selected a different document.
+        val queued = store.stage(preferred)
+        val staleToken = generations.next()
+        queued.target.writeText("candidate saved before manual open")
+
+        gate.begin()
+        generations.next() // MainActivity.openUri invalidates queued save completions.
+        // Native doc.open fails; do not call gate.succeeded().
+        assertFalse(gate.mayAutosave())
+        assertFalse(generations.isLatest(staleToken))
+        queued.target.delete() // stale completion cleanup, never a pointer commit
+
+        // onStop must not enqueue another save while native document identity is unknown.
+        if (gate.mayAutosave()) {
+            val candidate = store.stage(preferred)
+            candidate.target.writeText("unsafe snapshot")
+            store.finish(candidate, nativeSaveSucceeded = true)
+        }
+        assertEquals(0, commits)
+        assertEquals(original.absolutePath, preferred)
+        assertEquals("known good design", original.readText())
+        assertEquals(listOf(original), store.recoveryCandidates(preferred))
+    }
+
+    @Test fun supersededManualOpenSuccessCannotUnlockAutosave() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        val second = gate.begin()
+        assertFalse(gate.succeeded(first))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(second))
+        assertTrue(gate.mayAutosave())
+        val third = gate.begin()
+        assertFalse(gate.succeeded(second))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(third))
+    }
+
+    @Test fun lateManualOpenCallbackAfterFailedNewerRequestKeepsRecoverySafe() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        gate.begin() // Newer doc.open fails: no success callback is issued.
+        assertFalse(gate.succeeded(first))
+        assertFalse(gate.mayAutosave())
+    }
+
+    @Test fun repeatedNativeSuccessCallbackIsAcceptedExactlyOnce() {
+        val gate = ManualOpenAutosaveGate()
+        val request = gate.begin()
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+        // A duplicate callback must not mark the same document saved twice.
+        assertFalse(gate.succeeded(request))
+        // Opening another document closes the gate until that request succeeds.
+        val newer = gate.begin()
+        assertFalse(gate.succeeded(request))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(newer))
+        assertFalse(gate.succeeded(newer))
+        assertTrue(gate.mayAutosave())
+    }
+
+    @Test fun supersededFilePreparationCannotQueueNativeOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val first = gate.begin()
+        assertTrue(gate.isPending(first))
+        val second = gate.begin()
+        // Simulate the first document finishing its async file copy after a second Open.
+        val nativeOpens = mutableListOf<Long>()
+        if (gate.isPending(first)) nativeOpens.add(first)
+        assertTrue(nativeOpens.isEmpty())
+        assertTrue(gate.isPending(second))
+        if (gate.isPending(second)) nativeOpens.add(second)
+        assertEquals(listOf(second), nativeOpens)
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(second))
+        assertFalse(gate.isPending(second)) // Duplicate completion cannot requeue.
+    }
+
+    @Test fun queuedSupersededNativeSuccessAfterNewerFailedOpenCannotEnableAutosave() {
+        // Model the FIFO native queue separately from the posted main-thread callbacks.
+        // The older native open may succeed even after the newer request has been selected.
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val gate = ManualOpenAutosaveGate()
+            val callbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val nativeOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val first = gate.begin()
+            val firstNative = engine.submit {
+                nativeOrder.add("first native open succeeds")
+                callbacks.put { assertFalse(gate.succeeded(first)) }
+            }
+            val second = gate.begin()
+            val secondNative = engine.submit {
+                nativeOrder.add("second native open fails")
+                callbacks.put { /* A failed native open does not call gate.succeeded(). */ }
+            }
+            firstNative.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            secondNative.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf("first native open succeeds", "second native open fails"), nativeOrder.toList())
+            // The older success is delivered after both native commands have finished.
+            callbacks.take().invoke()
+            callbacks.take().invoke()
+            assertFalse(gate.mayAutosave())
+            // Only a subsequent, genuinely successful open can restore save eligibility.
+            val third = gate.begin()
+            assertTrue(gate.succeeded(third))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            engine.shutdownNow()
+        }
+    }
+
+    @Test fun supersededStagingFailureCannotReplaceNewerOpenStatus() {
+        val gate = ManualOpenAutosaveGate()
+        val older = gate.begin()
+        val newer = gate.begin()
+        var message = "Opening newer document"
+        val nativeOpens = mutableListOf<Long>()
+        // Mirrors MainActivity's completion ordering: generation check precedes error UI.
+        fun completeStaging(request: Long, error: String?) {
+            if (!gate.isPending(request)) return
+            if (error != null) {
+                message = error
+                return
+            }
+            nativeOpens.add(request)
+        }
+        completeStaging(older, "Could not read older document")
+        assertEquals("Opening newer document", message)
+        assertTrue(nativeOpens.isEmpty())
+        completeStaging(newer, null)
+        assertEquals(listOf(newer), nativeOpens)
+        assertFalse(gate.mayAutosave())
+    }
+
+
+    @Test fun nativeOpenSubmissionExceptionFallsBackWithoutDiscardingSnapshots() {
+        val dir = tmp.newFolder("submission-failure")
+        val first = File(dir, "autosave-first.sc").apply { writeText("first") }
+        val backup = File(dir, "autosave-backup.sc").apply { writeText("backup") }
+        val attempts = mutableListOf<File>()
+        var recovered: File? = null
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) throw IllegalStateException("native submission unavailable")
+                done(true)
+            },
+            onRecovered = { recovered = it },
+            onUnavailable = { unavailable++ }
+        ).start()
+        assertEquals(listOf(first, backup), attempts)
+        assertEquals(backup, recovered)
+        assertEquals(0, unavailable)
+        assertTrue(first.exists() && backup.exists())
+    }
+
+    @Test fun callbackThenSubmissionExceptionCannotAdvanceRecoveryTwice() {
+        val first = File("autosave-first.sc")
+        val backup = File("autosave-backup.sc")
+        val attempts = mutableListOf<File>()
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) {
+                    done(false)
+                    throw IllegalStateException("callback already delivered")
+                }
+                done(true)
+            },
+            onRecovered = { assertEquals(backup, it) },
+            onUnavailable = { unavailable++ }
+        ).start()
+        assertEquals(listOf(first, backup), attempts)
+        assertEquals(0, unavailable)
+    }
+
+    @Test fun throwingPreferenceCommitPreservesLastValidSnapshot() {
+        val dir = tmp.newFolder("commit-throws")
+        val prior = File(dir, "autosave-prior.sc").apply { writeText("known-good") }
+        var committedPath = prior.absolutePath
+        val store = AutosaveSnapshotStore(dir) {
+            throw IllegalStateException("preferences storage unavailable")
+        }
+        val candidate = store.stage(committedPath)
+        candidate.target.writeText("uncommitted candidate")
+
+        assertFalse(store.finish(candidate, nativeSaveSucceeded = true))
+        assertEquals(prior.absolutePath, committedPath)
+        assertEquals("known-good", prior.readText())
+        assertTrue(candidate.target.exists())
+        assertTrue(store.recoveryCandidates(committedPath).contains(prior))
+    }
+    @Test fun preferredRecoveryPointerCannotOpenUnmanagedFileInsideSnapshotDirectory() {
+        val dir = tmp.newFolder("unmanaged-preference")
+        val unrelated = File(dir, "imported-design.sc").apply { writeText("unrelated user file") }
+        val managed = File(dir, "autosave-known.sc").apply { writeText("preserved snapshot") }
+        val store = AutosaveSnapshotStore(dir) { true }
+
+        assertEquals(listOf(managed), store.recoveryCandidates(unrelated.absolutePath))
+        assertTrue(unrelated.exists())
+        assertEquals("unrelated user file", unrelated.readText())
+    }
+
+    @Test fun exhaustedRecoveryInhibitsAutosaveUntilNewValidManualOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val attempted = mutableListOf<String>()
+        val recovery = AutosaveRecoverySequence(
+            candidates = listOf(tmp.newFile("failed-recovery.sc")),
+            open = { file, done ->
+                attempted.add(file.name)
+                done(false)
+            },
+            onRecovered = { fail("failed recovery cannot report success") },
+            onUnavailable = { gate.begin() }
+        )
+        recovery.start()
+        assertEquals(listOf("failed-recovery.sc"), attempted)
+        assertFalse("failed recovery must not overwrite preserved snapshots", gate.mayAutosave())
+        val request = gate.begin()
+        assertFalse(gate.succeeded(request - 1))
+        assertFalse(gate.mayAutosave())
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+    }
+
+    @Test fun supersededQueuedRecoveryOpenIsRejectedBeforeNativeExecution() {
+        val queued = mutableListOf<() -> Unit>()
+        val nativeCalls = mutableListOf<String>()
+        val admitted = java.util.concurrent.atomic.AtomicBoolean(true)
+        val recovery = AutosaveRecoverySequence(
+            candidates = listOf(File("recovery.sc")),
+            open = { _, finished ->
+                // Mirror Cad.exec's engine-thread admission check, not its callback check.
+                queued += {
+                    if (admitted.get()) {
+                        nativeCalls += "doc.open"
+                        finished(true)
+                    }
+                }
+            },
+            onRecovered = { fail("Cancelled recovery must not report success") },
+            onUnavailable = { fail("Cancelled recovery must not exhaust") }
+        )
+        admitted.set(true)
+        recovery.start()
+        recovery.cancel()
+        admitted.set(recovery.isActive())
+        queued.single().invoke()
+        assertTrue(nativeCalls.isEmpty())
+    }
+
+    @Test fun supersededOpenAfterNativeExecutionCannotPublishStaleUiSnapshot() {
+        val gate = ManualOpenAutosaveGate()
+        val callbacks = mutableListOf<() -> Unit>()
+        val published = mutableListOf<String>()
+        val first = gate.begin()
+        // The native command has already finished; its UI callback is still queued.
+        val nativeSnapshot = "first-document"
+        callbacks += {
+            // Match Cad.exec's main-thread admission check before apply(snapshot).
+            if (gate.isPending(first)) {
+                published += nativeSnapshot
+                gate.succeeded(first)
+            }
+        }
+        gate.begin() // Newer manual open supersedes the finished native command.
+        callbacks.single().invoke()
+        assertTrue("stale native snapshot must never reach the UI", published.isEmpty())
+        assertFalse("stale success must not enable autosave", gate.mayAutosave())
+    }
+
+
+    @Test fun cancelledRecoveryIsInvisibleToQueuedEngineThreadBeforeNativeOpen() {
+        val queued = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val nativeCalls = java.util.concurrent.atomic.AtomicInteger(0)
+            lateinit var recovery: AutosaveRecoverySequence
+            recovery = AutosaveRecoverySequence(
+                candidates = listOf(File("autosave-cancelled.sc")),
+                open = { _, done ->
+                    engine.execute {
+                        queued.countDown()
+                        check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        // Same cross-thread admission predicate used by MainActivity's Cad.exec.
+                        if (recovery.isActive()) {
+                            nativeCalls.incrementAndGet()
+                            done(true)
+                        }
+                    }
+                },
+                onRecovered = { fail("Cancelled recovery must not succeed") },
+                onUnavailable = { fail("Cancelled recovery must not report exhaustion") }
+            )
+            recovery.start()
+            assertTrue(queued.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            recovery.cancel() // UI thread cancels while the engine thread is blocked.
+            release.countDown()
+            engine.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(0, nativeCalls.get())
+        } finally {
+            release.countDown()
+            engine.shutdownNow()
+        }
+    }
+
+    @Test fun inFlightSupersededNativeOpenCannotAuthorizeAutosaveAfterNewerOpenFails() {
+        // Deterministic native-mutation model, NOT a JNI integration test: cancellation
+        // cannot interrupt a command that has already passed the engine admission check.
+        val enteredNative = java.util.concurrent.CountDownLatch(1)
+        val releaseNative = java.util.concurrent.CountDownLatch(1)
+        val engine = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val gate = ManualOpenAutosaveGate()
+            val nativeDocument = java.util.concurrent.atomic.AtomicReference("original")
+            val callbacks = java.util.concurrent.LinkedBlockingQueue<() -> Unit>()
+            val oldRequest = gate.begin()
+            val oldOpen = engine.submit {
+                check(gate.isPending(oldRequest))
+                enteredNative.countDown()
+                check(releaseNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                nativeDocument.set("superseded-document")
+                callbacks.put { assertFalse(gate.succeeded(oldRequest)) }
+            }
+            assertTrue(enteredNative.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            gate.begin() // User selects a newer document while the old JNI call is running.
+            assertFalse(gate.mayAutosave())
+            releaseNative.countDown()
+            oldOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            // Newer native open fails; the stale successful native mutation remains possible.
+            callbacks.take().invoke()
+            assertEquals("superseded-document", nativeDocument.get())
+            assertFalse("unknown native identity must inhibit autosave", gate.mayAutosave())
+            val retry = gate.begin()
+            nativeDocument.set("intended-document")
+            assertTrue(gate.succeeded(retry))
+            assertEquals("intended-document", nativeDocument.get())
+            assertTrue(gate.mayAutosave())
+        } finally {
+            releaseNative.countDown()
+            engine.shutdownNow()
+        }
+    }
+    @Test fun concurrentManualOpenSupersessionRejectsLateNativeSuccessAcrossThreads() {
+        // The JNI completion thread must observe the newer UI-thread request generation,
+        // even when the old completion was already prepared before supersession.
+        val gate = ManualOpenAutosaveGate()
+        val completionReady = java.util.concurrent.CountDownLatch(1)
+        val allowCompletion = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            val oldRequest = gate.begin()
+            val staleCompletion = executor.submit<Boolean> {
+                completionReady.countDown()
+                check(allowCompletion.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                gate.succeeded(oldRequest)
+            }
+            assertTrue(completionReady.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerRequest = gate.begin()
+            assertFalse(gate.isPending(oldRequest))
+            assertTrue(gate.isPending(newerRequest))
+            allowCompletion.countDown()
+            assertFalse(staleCompletion.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("newer failed open must leave autosave inhibited", gate.mayAutosave())
+            assertTrue(gate.isPending(newerRequest))
+            assertTrue(gate.succeeded(newerRequest))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            allowCompletion.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun concurrentSnapshotGenerationProducesUniqueTokensAndRejectsOldCompletions() {
+        val generations = AutosaveGeneration()
+        val workers = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val ready = java.util.concurrent.CountDownLatch(4)
+        val start = java.util.concurrent.CountDownLatch(1)
+        try {
+            val tasks = (1..4).map {
+                workers.submit<List<Long>> {
+                    ready.countDown()
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    (1..250).map { generations.next() }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            start.countDown()
+            val tokens = tasks.flatMap { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(1000, tokens.distinct().size)
+            assertEquals((1L..1000L).toList(), tokens.sorted())
+            assertFalse(generations.isLatest(999L))
+            assertTrue(generations.isLatest(1000L))
+        } finally {
+            start.countDown()
+            workers.shutdownNow()
+        }
+    }
+
+    @Test fun simultaneousRecoveryCompletionsAdvanceOnlyOnce() {
+        val first = tmp.newFile("parallel-recovery-first.sc")
+        val second = tmp.newFile("parallel-recovery-second.sc")
+        val callbacks = mutableListOf<(Boolean) -> Unit>()
+        var recovered = 0
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, second),
+            { _, completion -> callbacks.add(completion) },
+            { recovered++ },
+            { unavailable++ }
+        )
+        sequence.start()
+        val completion = callbacks.single()
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                executor.submit {
+                    ready.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    completion(false)
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            results.forEach { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals("Only one fallback open may be scheduled", 2, callbacks.size)
+            assertEquals(0, recovered)
+            assertEquals(0, unavailable)
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun concurrentRecoveryStartSubmitsOnlyOneNativeOpen() {
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        val sequence = AutosaveRecoverySequence(
+            listOf(File("autosave-one.sc")),
+            open = { _, _ -> opens.incrementAndGet() },
+            onRecovered = { fail("No completion delivered") },
+            onUnavailable = { fail("Candidate exists") }
+        )
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val go = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val results = (1..2).map {
+                pool.submit<Boolean> {
+                    ready.countDown()
+                    check(go.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    try {
+                        sequence.start()
+                        true
+                    } catch (_: IllegalStateException) {
+                        false
+                    }
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            go.countDown()
+            assertEquals(1, results.count { it.get(5, java.util.concurrent.TimeUnit.SECONDS) })
+            assertEquals("Concurrent lifecycle starts must not enqueue duplicate doc.open", 1, opens.get())
+        } finally {
+            go.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+
+    @Test fun racingSuccessAndFailureForSameRecoveryAttemptPublishOnlyOneOutcome() {
+        val first = File("autosave-racing-first.sc")
+        val backup = File("autosave-racing-backup.sc")
+        val callbacks = java.util.concurrent.CopyOnWriteArrayList<(Boolean) -> Unit>()
+        val opened = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val recovered = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, completion ->
+                opened.add(file)
+                callbacks.add(completion)
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        sequence.start()
+        val firstCompletion = callbacks.single()
+        val ready = java.util.concurrent.CountDownLatch(2)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            val jobs = listOf(true, false).map { success ->
+                pool.submit {
+                    ready.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    firstCompletion(success)
+                }
+            }
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            release.countDown()
+            jobs.forEach { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }
+            assertEquals(0, unavailable.get())
+            if (recovered.isNotEmpty()) {
+                assertEquals(listOf(first), recovered.toList())
+                assertEquals(listOf(first), opened.toList())
+            } else {
+                assertEquals(listOf(first, backup), opened.toList())
+                assertEquals(2, callbacks.size)
+                callbacks.last()(true)
+                assertEquals(listOf(backup), recovered.toList())
+            }
+            assertFalse(sequence.isActive())
+        } finally {
+            release.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+    @Test fun cancellationBeforeRecoveryStartNeverSubmitsNativeOpen() {
+        val nativeOpens = java.util.concurrent.atomic.AtomicInteger()
+        val recovered = java.util.concurrent.atomic.AtomicInteger()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val recovery = AutosaveRecoverySequence(
+            listOf(File("autosave-cancelled-before-start.sc")),
+            open = { _, _ -> nativeOpens.incrementAndGet() },
+            onRecovered = { recovered.incrementAndGet() },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        // A manual document open can supersede a scheduled cold-start recovery
+        // before its lifecycle start callback has executed.
+        recovery.cancel()
+        recovery.start()
+        assertEquals(0, nativeOpens.get())
+        assertEquals(0, recovered.get())
+        assertEquals(0, unavailable.get())
+        assertFalse(recovery.isActive())
+    }
+
+    @Test fun nativeSuccessThenSubmissionThrowDoesNotOpenFallback() {
+        val first = File("autosave-success.sc")
+        val backup = File("autosave-backup.sc")
+        val attempted = mutableListOf<File>()
+        val recovered = mutableListOf<File>()
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempted.add(file)
+                done(true)
+                // A native adapter can throw after a synchronous success callback.
+                // Its submission exception must not turn accepted success into fallback.
+                throw IllegalStateException("post-completion submission failure")
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable++ }
+        )
+        sequence.start()
+        assertEquals(listOf(first), attempted)
+        assertEquals(listOf(first), recovered)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
+    @Test fun recoveredCallbackThrowCannotRetryNativeOpenOrReportUnavailable() {
+        val first = File("autosave-first.sc")
+        val backup = File("autosave-backup.sc")
+        val attempted = mutableListOf<File>()
+        var unavailable = 0
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, done ->
+                attempted.add(file)
+                done(true)
+            },
+            onRecovered = { throw IllegalStateException("UI callback failed after native success") },
+            onUnavailable = { unavailable++ }
+        )
+        // Native submission wraps the callback; an exception from the consumer must
+        // not be interpreted as a failed native open and attempt another document.
+        try {
+            sequence.start()
+        } catch (_: IllegalStateException) {
+            // A synchronous callback is allowed to propagate to the caller.
+        }
+        assertEquals(listOf(first), attempted)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
+
+    @Test fun throwingPreferenceCommitPreservesLastValidRecoveryPointer() {
+        val dir = tmp.newFolder("throwing-preference-commit")
+        val previous = File(dir, "autosave-previous.sc").apply { writeText("last valid design") }
+        val candidateStore = AutosaveSnapshotStore(dir) {
+            throw IllegalStateException("preference storage unavailable")
+        }
+        val candidate = candidateStore.stage(previous.absolutePath)
+        candidate.target.writeText("new uncommitted design")
+
+        assertFalse(candidateStore.finish(candidate, nativeSaveSucceeded = true))
+        assertTrue("Ambiguous preference commit must retain the completed candidate", candidate.target.exists())
+        assertEquals("last valid design", previous.readText())
+        assertEquals(listOf(previous, candidate.target), candidateStore.recoveryCandidates(previous.absolutePath))
+    }
+
+    @Test fun acceptedRecoverySuccessIsTerminalBeforeConsumerCallback() {
+        val first = File("autosave-terminal.sc")
+        var completion: ((Boolean) -> Unit)? = null
+        lateinit var sequence: AutosaveRecoverySequence
+        var publications = 0
+        sequence = AutosaveRecoverySequence(
+            listOf(first),
+            open = { _, done -> completion = done },
+            onRecovered = {
+                assertFalse("Recovery must be inactive before external publication", sequence.isActive())
+                sequence.cancel() // Reentrant user action cannot reopen a completed recovery.
+                publications++
+            },
+            onUnavailable = { fail("Accepted recovery must not report exhaustion") }
+        )
+        sequence.start()
+        completion!!(true)
+        completion!!(true)
+        assertEquals(1, publications)
+        assertFalse(sequence.isActive())
+    }
+
+    @Test fun cancelledRecoverySubmissionExceptionCannotScheduleFallback() {
+        val first = File("autosave-cancelled-submission.sc")
+        val backup = File("autosave-backup.sc")
+        val attempts = mutableListOf<File>()
+        var recovered = 0
+        var unavailable = 0
+        lateinit var sequence: AutosaveRecoverySequence
+        sequence = AutosaveRecoverySequence(
+            listOf(first, backup),
+            open = { file, _ ->
+                attempts.add(file)
+                sequence.cancel() // Explicit manual Open supersedes the native submission.
+                throw IllegalStateException("native submission failed after cancellation")
+            },
+            onRecovered = { recovered++ },
+            onUnavailable = { unavailable++ }
+        )
+        sequence.start()
+        assertEquals(listOf(first), attempts)
+        assertEquals(0, recovered)
+        assertEquals(0, unavailable)
+        assertFalse(sequence.isActive())
+    }
+
+
+    @Test fun manualCancellationDoesNotWaitForBlockedNativeRecoverySubmission() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(File("autosave-blocked-native.sc")),
+            open = { _, done ->
+                entered.countDown()
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                done(true)
+            },
+            onRecovered = { fail("Cancelled recovery cannot publish a stale document") },
+            onUnavailable = { fail("Cancelled recovery cannot report exhaustion") }
+        )
+        try {
+            val start = executor.submit { sequence.start() }
+            assertTrue("Native submission never started", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // cancel() must not be serialized behind a blocking native adapter.
+            // Run cancellation on the test thread; release the adapter from a separate
+            // timed helper so a regression cannot hang the entire JVM indefinitely.
+            val unblock = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+            try {
+                unblock.schedule({ release.countDown() }, 2, java.util.concurrent.TimeUnit.SECONDS)
+                val before = System.nanoTime()
+                sequence.cancel()
+                val elapsedMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                assertTrue("Cancellation blocked on native submission: ${elapsedMs}ms", elapsedMs < 1500)
+                release.countDown()
+                start.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertFalse(sequence.isActive())
+            } finally {
+                unblock.shutdownNow()
+            }
+        } finally {
+            release.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test fun cancelledFallbackSubmissionCannotPublishLateNativeSuccess() {
+        val first = File("autosave-rejected-first.sc")
+        val fallback = File("autosave-cancelled-fallback.sc")
+        val enteredFallback = java.util.concurrent.CountDownLatch(1)
+        val releaseFallback = java.util.concurrent.CountDownLatch(1)
+        val opened = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val recovered = java.util.concurrent.CopyOnWriteArrayList<File>()
+        val unavailable = java.util.concurrent.atomic.AtomicInteger()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                opened.add(file)
+                if (file == first) {
+                    done(false)
+                } else {
+                    enteredFallback.countDown()
+                    check(releaseFallback.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    done(true)
+                }
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable.incrementAndGet() }
+        )
+        try {
+            val running = worker.submit { sequence.start() }
+            assertTrue(enteredFallback.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            sequence.cancel()
+            releaseFallback.countDown()
+            running.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf(first, fallback), opened.toList())
+            assertTrue("Late fallback success must not publish after manual Open", recovered.isEmpty())
+            assertEquals(0, unavailable.get())
+            assertFalse(sequence.isActive())
+        } finally {
+            releaseFallback.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    @Test fun concurrentCancellationAfterAcceptedRecoverySuccessDoesNotReopenFallback() {
+        // A successful native completion owns terminal recovery before calling the consumer.
+        // A simultaneous manual-open cancellation must not resurrect fallback or duplicate
+        // publication, even while the first consumer callback is still running.
+        val first = File("autosave-accepted-first.sc")
+        val fallback = File("autosave-accepted-fallback.sc")
+        val completions = mutableListOf<(Boolean) -> Unit>()
+        val opened = mutableListOf<File>()
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        val enteredPublication = java.util.concurrent.CountDownLatch(1)
+        val releasePublication = java.util.concurrent.CountDownLatch(1)
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val sequence = AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                opened.add(file)
+                completions.add(done)
+            },
+            onRecovered = {
+                assertEquals(first, it)
+                enteredPublication.countDown()
+                check(releasePublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                published.incrementAndGet()
+            },
+            onUnavailable = { fail("Accepted success cannot become exhaustion") }
+        )
+        try {
+            sequence.start()
+            val completion = completions.single()
+            val publishing = pool.submit { completion(true) }
+            assertTrue("Success was not accepted", enteredPublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("Accepted recovery must already be terminal", sequence.isActive())
+            sequence.cancel() // Concurrent manual-open cancellation during publication.
+            completion(false) // Duplicate contradictory completion must not open fallback.
+            completion(true)
+            releasePublication.countDown()
+            publishing.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(listOf(first), opened)
+            assertEquals(1, published.get())
+            assertFalse(sequence.isActive())
+        } finally {
+            releasePublication.countDown()
+            pool.shutdownNow()
+        }
+    }
+
+
+    @Test fun concurrentSupersessionCannotLeaveAutosaveEnabled() {
+        // A native success and a newer user Open can race on different threads.
+        // Regardless of which acquires the gate monitor first, the newer Open
+        // must leave autosave inhibited until its own successful completion.
+        repeat(100) {
+            val gate = ManualOpenAutosaveGate()
+            val oldRequest = gate.begin()
+            val start = java.util.concurrent.CountDownLatch(1)
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(2)
+            try {
+                val oldCompletion = pool.submit<Boolean> {
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    gate.succeeded(oldRequest)
+                }
+                val newOpen = pool.submit<Long> {
+                    check(start.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    gate.begin()
+                }
+                start.countDown()
+                val acceptedOld = oldCompletion.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                val newRequest = newOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+                assertTrue(newRequest > oldRequest)
+                assertFalse("Newer Open must inhibit autosave after concurrent old success", gate.mayAutosave())
+                assertFalse(gate.succeeded(oldRequest))
+                assertTrue(gate.isPending(newRequest))
+                assertTrue(gate.succeeded(newRequest))
+                assertTrue(gate.mayAutosave())
+                // Both orders are legal: the old success may have won before begin().
+                if (acceptedOld) assertFalse(gate.succeeded(oldRequest))
+            } finally {
+                start.countDown()
+                pool.shutdownNow()
+            }
+        }
+    }
+
+
+    @Test fun acceptedRecoveryCannotCommitPointerAfterManualOpenSupersedesPublication() {
+        // Native success may be accepted before a newer user Open, while the consumer
+        // callback has not yet checked its generation. This is not a JNI integration test.
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val enteredPublication = java.util.concurrent.CountDownLatch(1)
+        val releasePublication = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        val candidate = File("autosave-accepted-before-manual-open.sc")
+        var completion: ((Boolean) -> Unit)? = null
+        val recovery = AutosaveRecoverySequence(
+            listOf(candidate),
+            open = { _, done -> completion = done },
+            onRecovered = {
+                enteredPublication.countDown()
+                check(releasePublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                // Mirrors MainActivity's guard before camera/URI/pointer publication.
+                if (gate.currentGeneration() == recoveryGeneration) published.incrementAndGet()
+            },
+            onUnavailable = { fail("Accepted native success cannot become exhaustion") }
+        )
+        try {
+            recovery.start()
+            val completing = worker.submit { completion!!(true) }
+            assertTrue(enteredPublication.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse(recovery.isActive())
+            val manualRequest = gate.begin()
+            recovery.cancel()
+            releasePublication.countDown()
+            completing.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals("Stale recovery must not publish a pointer", 0, published.get())
+            assertFalse("Manual Open must inhibit autosave", gate.mayAutosave())
+            assertTrue(gate.isPending(manualRequest))
+        } finally {
+            releasePublication.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+
+    @Test fun recoveryPointerPublicationCannotInterleaveWithNewManualOpen() {
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val enteredCommit = java.util.concurrent.CountDownLatch(1)
+        val releaseCommit = java.util.concurrent.CountDownLatch(1)
+        val openAttempted = java.util.concurrent.CountDownLatch(1)
+        val worker = java.util.concurrent.Executors.newFixedThreadPool(2)
+        val published = java.util.concurrent.atomic.AtomicInteger()
+        try {
+            val publishing = worker.submit<Boolean> {
+                gate.publishIfCurrent(recoveryGeneration) {
+                    enteredCommit.countDown()
+                    check(releaseCommit.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    published.incrementAndGet()
+                }
+            }
+            assertTrue(enteredCommit.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerOpen = worker.submit<Long> {
+                openAttempted.countDown()
+                gate.begin()
+            }
+            assertTrue(openAttempted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // Manual Open must wait for an already-admitted preference commit.
+            releaseCommit.countDown()
+            assertTrue(publishing.get(5, java.util.concurrent.TimeUnit.SECONDS))
+            val newerGeneration = newerOpen.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(1, published.get())
+            assertFalse(gate.mayAutosave())
+            assertFalse("Old recovery must never publish after newer Open", gate.publishIfCurrent(recoveryGeneration) {
+                published.incrementAndGet()
+            })
+            assertEquals(1, published.get())
+            assertTrue(gate.isPending(newerGeneration))
+        } finally {
+            releaseCommit.countDown()
+            worker.shutdownNow()
+        }
+    }
+
+    @Test fun failedRecoveryPreferencePublicationReleasesGateForNewManualOpen() {
+        // A preference commit may throw (for example, storage failure). The gate
+        // must not strand the UI or authorize autosave of the failed recovery.
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            try {
+                gate.publishIfCurrent(recoveryGeneration) {
+                    throw IllegalStateException("simulated preference commit failure")
+                }
+                fail("Preference failure must propagate to the recovery handler")
+            } catch (expected: IllegalStateException) {
+                assertEquals("simulated preference commit failure", expected.message)
+            }
+            val request = worker.submit<Long> { gate.begin() }
+                .get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertFalse("New manual Open must inhibit autosave", gate.mayAutosave())
+            assertTrue(gate.isPending(request))
+            assertFalse("Failed recovery cannot publish after newer Open",
+                gate.publishIfCurrent(recoveryGeneration) { fail("stale commit executed") })
+            assertTrue(gate.succeeded(request))
+            assertTrue(gate.mayAutosave())
+        } finally {
+            worker.shutdownNow()
+        }
+    }
+
+    @Test fun exhaustedRecoveryCannotInhibitAutosaveAfterNewerManualOpenSucceeds() {
+        val gate = ManualOpenAutosaveGate()
+        val recoveryGeneration = gate.currentGeneration()
+        val request = gate.begin()
+        assertTrue(gate.succeeded(request))
+        assertTrue(gate.mayAutosave())
+        assertFalse(gate.inhibitIfGenerationUnchanged(recoveryGeneration))
+        assertTrue("Stale recovery exhaustion must not disable the newer document", gate.mayAutosave())
+    }
+
+    @Test fun lateSuccessAfterSubmissionExceptionCannotReplaceFallbackRecovery() {
+        val first = File("autosave-submission-throws.sc")
+        val fallback = File("autosave-fallback.sc")
+        var staleCompletion: ((Boolean) -> Unit)? = null
+        val attempts = mutableListOf<File>()
+        val recovered = mutableListOf<File>()
+        var unavailable = 0
+        AutosaveRecoverySequence(
+            listOf(first, fallback),
+            open = { file, done ->
+                attempts.add(file)
+                if (file == first) {
+                    staleCompletion = done
+                    throw IllegalStateException("native adapter failed after queuing callback")
+                }
+                done(true)
+            },
+            onRecovered = { recovered.add(it) },
+            onUnavailable = { unavailable++ }
+        ).start()
+
+        assertEquals(listOf(first, fallback), attempts)
+        assertEquals(listOf(fallback), recovered)
+        // A delayed success from the failed submission must never publish the
+        // superseded document or change the already accepted fallback.
+        staleCompletion!!.invoke(true)
+        staleCompletion!!.invoke(false)
+        assertEquals(listOf(first, fallback), attempts)
+        assertEquals(listOf(fallback), recovered)
+        assertEquals(0, unavailable)
+    }
+
+}

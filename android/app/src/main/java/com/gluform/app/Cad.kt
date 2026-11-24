@@ -150,13 +150,21 @@ object Cad : ViewportHost {
     }
 
     /** Run a command, then refresh everything the UI shows. `then` gets the result, or null when it failed. */
-    fun exec(cmd: String, params: JSONObject = JSONObject(), quiet: Boolean = false, then: (JSONObject?) -> Unit = {}) {
+    fun exec(cmd: String, params: JSONObject = JSONObject(), quiet: Boolean = false, shouldExecute: () -> Boolean = { true }, then: (JSONObject?) -> Unit = {}) {
         busy++
         engine.execute {
+            // A cancelled document open must not reach JNI or publish an obsolete snapshot.
+            if (!shouldExecute()) {
+                main.post { busy-- }
+                return@execute
+            }
             val r = runCatching { JSONObject(Native.execute(cmd, params.toString())) }.getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "failed") }
             val snap = snapshot()
             main.post {
                 busy--
+                // A newer open may supersede this command after JNI finishes but before
+                // the main-thread callback runs. Never publish its obsolete UI snapshot.
+                if (!shouldExecute()) return@post
                 apply(snap)
                 if (r.optBoolean("ok")) {
                     val res = r.opt("result")
